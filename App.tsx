@@ -1,45 +1,727 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
-
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
+import 'react-native-get-random-values';
+import React, { useRef, useState, useEffect } from "react";
 import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  Image,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  StatusBar,
+  useColorScheme,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Dimensions,
+  ScrollView,
+} from "react-native";
+import { WebView, type WebView as WebViewType } from "react-native-webview";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import RNBootSplash from "react-native-bootsplash";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { useNetInfo } from "@react-native-community/netinfo";
+import CryptoJS from 'crypto-js';
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
 
+const LOGIN_URL = "https://heritage.healthray.com/login";
+const IP_API_URL = "https://api64.ipify.org/?format=json";
+
+const STORAGE_KEYS = {
+  ONLY_WEB: "ONLY_WEB",
+  SAVE_WEB_URL: "SAVE_WEB_URL",
+  IS_LOGGED_IN: "IS_LOGGED_IN",
+};
+
+const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
+const { width } = Dimensions.get('window');
+
+
+export default function App() {
+  const mode = useColorScheme();
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
+      <StatusBar
+        barStyle={mode === "dark" ? "light-content" : "dark-content"}
+      />
       <AppContent />
     </SafeAreaProvider>
   );
 }
 
 function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
+  const webRef = useRef<WebViewType>(null);
 
+  const wasLoggedInRef = useRef(false);
+  const isFirstWebLoadRef = useRef(true);
+  const { isConnected, isInternetReachable } = useNetInfo()
+
+  const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastWebUrlRef = useRef<string>('');
+
+  const [showWeb, setShowWeb] = useState(false);
+  const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
+  const [mobileNo, setMobileNo] = useState("6359193816");
+  const [password, setPassword] = useState("Admin@12345");
+  const [userType, setUserType] = useState('Doctor');
+  const [loading, setLoading] = useState(false);
+  const [mobileNoError, setMobileNoError] = useState<string | null>(null);
+  const showInternetModel = !isConnected && !isInternetReachable
+
+  useEffect(() => {
+    RNBootSplash.hide({ fade: true });
+  }, []);
+
+  useEffect(() => {
+    const checkLoginState = async () => {
+      const savedUrl = await AsyncStorage.getItem(STORAGE_KEYS.SAVE_WEB_URL);
+      const isLoggedIn = await AsyncStorage.getItem(STORAGE_KEYS.IS_LOGGED_IN);
+
+      if (isLoggedIn === "true") {
+        wasLoggedInRef.current = true;
+        setInitialWebUrl(savedUrl ?? LOGIN_URL);
+        setShowWeb(true);
+      } else {
+        setShowWeb(false);
+      }
+    };
+
+    checkLoginState();
+  }, []);
+
+  const convertLocalTimeToUtcTime = () => {
+    // Get current local time
+    const localTime = new Date();
+    // Get the time zone offset in minutes
+    const timezoneOffsetInMinutes = localTime.getTimezoneOffset();
+    // Convert local time to UTC by subtracting the offset
+    const utcTime = new Date(
+      localTime.getTime() - timezoneOffsetInMinutes * 60000
+    );
+
+    return utcTime;
+  };
+
+  const encryptText = (plainTextString: string): string | null => {
+    console.log("JS encryptText: Input plaintext string:", plainTextString);
+    try {
+      const salt = CryptoJS.lib.WordArray.random(128 / 8); // 16 bytes
+
+      const key = CryptoJS.PBKDF2(SECRET_KEY, salt, {
+        keySize: 256 / 32,
+        iterations: 1000,
+        hasher: CryptoJS.algo.SHA1, // Ensure this is needed and matches iOS
+      });
+
+      // Ensure plainText is a WordArray if it's a string
+      let plainTextWordArray: CryptoJS.lib.WordArray;
+      if (typeof plainTextString === "string") {
+        plainTextWordArray = CryptoJS.enc.Utf8.parse(plainTextString);
+      } else {
+        // This case should not happen if you call it with a string
+        plainTextWordArray = plainTextString as CryptoJS.lib.WordArray;
+      }
+
+      const encryptedCipherParams = CryptoJS.AES.encrypt(
+        plainTextWordArray,
+        key,
+        {
+          iv: salt,
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7,
+        }
+      );
+
+      const saltHex = salt.toString(CryptoJS.enc.Hex);
+      // Use .ciphertext to get the raw encrypted data, then Base64 encode it
+      const ciphertextBase64 = encryptedCipherParams.ciphertext.toString(
+        CryptoJS.enc.Base64
+      );
+
+      return saltHex + ciphertextBase64;
+    } catch (error) {
+      console.error("JS Encryption Error:", error);
+      return null;
+    }
+  };
+
+
+  const handleLogin = async () => {
+    if (!mobileNo || !password) {
+      Alert.alert("Error", "Enter mobile number & password");
+      return;
+    }
+
+    setMobileNoError(null);
+
+    // Optional: mobile validation (remove if not needed)
+    if (mobileNo.length < 10) {
+      setMobileNoError("Please enter a valid mobile number.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+
+      // Encrypt password
+      const passwordPayload = JSON.stringify({
+        text: password,
+        time: convertLocalTimeToUtcTime(),
+      });
+
+      const encryptedPassword = encryptText(passwordPayload);
+
+      console.log('encryptedPassword :::', encryptedPassword)
+
+      // API payload (UPDATED)
+      const payload = {
+        user: {
+          mobile_no: mobileNo,
+          password: encryptedPassword,
+          platform: Platform.OS === "android" ? "Android" : "iOS",
+          user_type: userType,
+        },
+      };
+
+      console.log('Login payload ::::', payload);
+
+      // API call
+      const res = await fetch(
+        "https://heritagenode.healthray.com/api/v2/users/sign_in",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const data = await res.json();
+
+      console.log('Login Data :::', data);
+
+      // Error handling
+      if (!res.ok || data?.statusState !== "success") {
+        Alert.alert("Login Failed", data?.message || "Unable to sign in");
+        return;
+      }
+
+      // Success
+      await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
+
+      isFirstWebLoadRef.current = true;
+      setInitialWebUrl(LOGIN_URL);
+      setShowWeb(true);
+      setLoading(true);
+
+      /* ⏱️ START LOGIN WATCHDOG */
+      if (loginTimeoutRef.current) {
+        clearTimeout(loginTimeoutRef.current);
+      }
+
+      loginTimeoutRef.current = setTimeout(async () => {
+        const currentUrl = lastWebUrlRef.current;
+
+        console.log("⏱️ Login timeout check:", currentUrl);
+
+        // ❌ Still stuck on login
+        if (!currentUrl || currentUrl.includes("/login")) {
+          console.log("❌ Auto-login failed, fallback to native login");
+
+          await AsyncStorage.multiRemove([
+            STORAGE_KEYS.IS_LOGGED_IN,
+            STORAGE_KEYS.SAVE_WEB_URL,
+          ]);
+
+          wasLoggedInRef.current = false;
+          setShowWeb(false);
+          setLoading(false);
+
+          Alert.alert(
+            "Login Failed",
+            "Auto login falied. Please try again."
+            // "Something went wrong. Please try again."
+          );
+        }
+      }, 15000);
+
+
+    } catch (e: any) {
+      Alert.alert(
+        "Login Failed12",
+        e.message || "Something went wrong. Please try again."
+      );
+    }
+    // finally {
+    //   setLoading(false);
+    // }
+  };
+
+
+
+  const handleLoadEnd = (e: any) => {
+    const url = e.nativeEvent.url.toLowerCase();
+
+    if (url.includes("/login")) {
+      setTimeout(() => {
+        webRef.current?.injectJavaScript(autoFillScript);
+      }, 800);
+    }
+
+    if (url.includes("/patients")) {
+      setTimeout(() => setLoading(false), 1500);
+    }
+  };
+
+  const handleNavigationStateChange = async (navState: any) => {
+    const url = navState.url.toLowerCase();
+    lastWebUrlRef.current = url; // 👈 track latest URL
+
+    await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
+
+    if (url.includes("/patients")) {
+      wasLoggedInRef.current = true;
+      await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
+
+      // ✅ SUCCESS → clear timeout
+      if (loginTimeoutRef.current) {
+        clearTimeout(loginTimeoutRef.current);
+        loginTimeoutRef.current = null;
+      }
+
+      setTimeout(() => setLoading(false), 1500);
+      return;
+    }
+
+    if (
+      wasLoggedInRef.current &&
+      url.includes("/login") &&
+      isFirstWebLoadRef.current
+    ) {
+      await AsyncStorage.multiRemove([
+        STORAGE_KEYS.IS_LOGGED_IN,
+        STORAGE_KEYS.SAVE_WEB_URL,
+      ]);
+
+      wasLoggedInRef.current = false;
+      setShowWeb(false);
+      setLoading(false);
+    }
+  };
+
+
+  const disableZoomScript = `
+  (function () {
+    var meta = document.createElement('meta');
+    meta.setAttribute('name', 'viewport');
+    meta.setAttribute(
+      'content',
+      'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
+    );
+    document.getElementsByTagName('head')[0].appendChild(meta);
+  })();
+  true;
+`;
+
+
+  const autoFillScript = `
+      (function autoLogin() {
+      try {
+        const url = window.location.href;
+        console.log('✅ Page loaded:', url);
+ 
+        if (!url.includes('/login')) {
+          return;
+        }
+ 
+        const mobileInput = document.getElementById('mobile_no');
+        const passwordInput =
+          document.querySelector('#mat-input-1') ||
+          document.querySelector('input[type="password"]');
+ 
+        const loginButton = document.querySelector('button.submit-button');
+ 
+        const doctorButton = document.getElementById('mat-button-toggle-1-button');
+        const staffButton = document.getElementById('mat-button-toggle-2-button');
+ 
+        const verificationType = '${userType}';
+ 
+        if (verificationType.toLowerCase() === 'invitee') {
+          if (staffButton) staffButton.click();
+        } else {
+          if (doctorButton) doctorButton.click();
+        }
+ 
+        if (mobileInput && passwordInput && loginButton) {
+          mobileInput.value = '${mobileNo}';
+          mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+ 
+          passwordInput.value = '${password}';
+          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+ 
+          setTimeout(() => {
+            loginButton.click();
+            console.log('✅ Auto login triggered');
+          }, 2500);
+        } else {
+          setTimeout(autoLogin, 400);
+        }
+      } catch (e) {
+        console.log('❌ Auto login error:', e);
+      }
+    })();
+    true;
+  `;
+
+  /* ================= WEB VIEW ================= */
+  if (showWeb) {
+    return (
+      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+        <WebView
+          ref={webRef}
+          source={{ uri: initialWebUrl }}
+          style={{ flex: 1, opacity: loading ? 0 : 1 }}
+          javaScriptEnabled
+          domStorageEnabled
+          mixedContentMode="always"
+
+          injectedJavaScript={disableZoomScript}
+          scalesPageToFit={false}        // Android
+          setBuiltInZoomControls={false} // Android
+          setDisplayZoomControls={false} // Android
+          bounces={false}                // iOS
+          scrollEnabled={true}
+
+          onLoadEnd={handleLoadEnd}
+          onNavigationStateChange={handleNavigationStateChange}
+        />
+
+
+        {loading && (
+          <View style={styles.overlay}>
+            <ActivityIndicator size="large" color="#576bff" />
+          </View>
+        )}
+
+        <Modal visible={showInternetModel} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>No Internet</Text>
+              <Text style={styles.modalText}>
+                Please check your internet connection
+              </Text>
+              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]} >
+                <Text style={styles.buttonText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </SafeAreaView>
+    );
+  }
+
+  /* ================= LOGIN UI ================= */
   return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: '#fff' }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+    >
+      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Login Here</Text>
+        </View>
+
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1 }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.container}>
+            {/* Logo */}
+            <Image
+              source={require('./src/common/HIMSlogo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+
+            {/* Subtitle */}
+            <Text style={styles.subtitle}>
+              Glad to see you back. Please login to start chatting with your
+              patient.
+            </Text>
+
+            {/* Doctor / Staff Switch */}
+            <View style={styles.segment}>
+              {['Doctor', 'Invitee'].map((item, index) => (
+                <TouchableOpacity
+                  key={item}
+                  style={[
+                    styles.segmentBtn,
+                    userType === item && styles.segmentActive,
+                  ]}
+                  onPress={() => setUserType(index === 1 ? "Invitee" : "Doctor")}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      userType === item && styles.segmentTextActive,
+                    ]}
+                  >
+                    {item === "Invitee" ? "Staff" : "Doctor"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Mobile Input */}
+            <View style={styles.inputWrapper}>
+              <TextInput
+                placeholder="Mobile number"
+                placeholderTextColor="#999"
+                keyboardType="phone-pad"
+                maxLength={10}
+                style={styles.input}
+                value={mobileNo}
+                onChangeText={(text) => {
+                  setMobileNo(text);
+                  if (mobileNoError) setMobileNoError(null); // clear error while typing
+                }}
+              />
+              {mobileNoError && (
+                <Text style={styles.errorText}>
+                  {mobileNoError}
+                </Text>
+              )}
+            </View>
+
+            {/* Password Input */}
+            <View style={styles.inputWrapper}>
+              <TextInput
+                placeholder="Password"
+                placeholderTextColor="#999"
+                secureTextEntry
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+              />
+            </View>
+
+            {/* Login Button */}
+            <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
+              <Text style={styles.loginText}>Login</Text>
+            </TouchableOpacity>
+
+            {/* Forgot */}
+            {/* <TouchableOpacity>
+              <Text style={styles.forgotText}>Forgot Your Password ?</Text>
+            </TouchableOpacity> */}
+          </View>
+        </ScrollView>
+
+        {loading && (
+          <View style={styles.overlay}>
+            <ActivityIndicator size="large" color="#576bff" />
+          </View>
+        )}
+
+        <Modal visible={showInternetModel} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>No Internet</Text>
+              <Text style={styles.modalText}>
+                Please check your internet connection
+              </Text>
+              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]} >
+                <Text style={styles.buttonText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
+/* ================= STYLES ================= */
 const styles = StyleSheet.create({
+  // container: {
+  //   flex: 1,
+  //   backgroundColor: "#5a8db8",
+  //   justifyContent: "center",
+  //   alignItems: "center",
+  // },
+  card: {
+    width: "88%",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 25,
+    elevation: 6,
+  },
+  // logo: {
+  //   width: 200,
+  //   height: 150,
+  //   resizeMode: "contain",
+  //   alignSelf: "center",
+  //   marginBottom: -20,
+  //   marginTop: -30,
+  // },
+  title: {
+    textAlign: "center",
+    fontSize: 20,
+    marginBottom: 10,
+    fontWeight: "600",
+  },
+  // subtitle: {
+  //   textAlign: "center",
+  //   fontSize: 13,
+  //   color: "#666",
+  //   marginBottom: 20,
+  //   marginTop: 20,
+  // },
+  // input: {
+  //   borderWidth: 1,
+  //   borderColor: "#ccc",
+  //   borderRadius: 6,
+  //   height: 45,
+  //   paddingHorizontal: 10,
+  //   marginBottom: 12,
+  //   color: "#000",
+  // },
+  errorText: {
+    color: "red",
+    fontSize: 12,
+    // marginTop: 4,
+    // marginBottom: 8,
+    // marginLeft: 4,
+  },
+
+  button: {
+    backgroundColor: "#0b3d6e",
+    height: 45,
+    borderRadius: 6,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 10,
+  },
+  buttonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  overlay: {
+    position: "absolute",
+    inset: 0,
+    backgroundColor: "rgba(255,255,255,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: '80%',
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  modalText: {
+    textAlign: 'center',
+  },
+  header: {
+    height: 56,
+    backgroundColor: '#114DAA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
   container: {
     flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: width * 0.08,
+  },
+  logo: {
+    width: width * 0.5,
+    height: 120,
+    marginTop: 30,
+  },
+  subtitle: {
+    textAlign: 'center',
+    color: '#444',
+    marginVertical: 20,
+    fontSize: 14,
+  },
+  segment: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#114DAA',
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 30,
+    width: '100%',
+  },
+  segmentBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  segmentActive: {
+    backgroundColor: '#114DAA',
+  },
+  segmentText: {
+    color: '#114DAA',
+    fontWeight: '600',
+  },
+  segmentTextActive: {
+    color: '#fff',
+  },
+  inputWrapper: {
+    width: '100%',
+    borderBottomWidth: 1,
+    borderBottomColor: '#ddd',
+    marginBottom: 20,
+  },
+  input: {
+    height: 45,
+    fontSize: 15,
+  },
+  loginBtn: {
+    width: '100%',
+    backgroundColor: '#114DAA',
+    paddingVertical: 14,
+    borderRadius: 30,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  loginText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  forgotText: {
+    marginTop: 25,
+    color: '#114DAA',
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
 });
 
-export default App;
