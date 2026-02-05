@@ -23,10 +23,10 @@ import RNBootSplash from "react-native-bootsplash";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useNetInfo } from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
+import Icon from 'react-native-vector-icons/MaterialIcons';
 
 
 const LOGIN_URL = "https://heritage.healthray.com/login";
-const IP_API_URL = "https://api64.ipify.org/?format=json";
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -55,16 +55,16 @@ function AppContent() {
 
   const wasLoggedInRef = useRef(false);
   const isFirstWebLoadRef = useRef(true);
-  const { isConnected, isInternetReachable } = useNetInfo()
-
-  const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastWebUrlRef = useRef<string>('');
+  const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { isConnected, isInternetReachable } = useNetInfo()
 
   const [showWeb, setShowWeb] = useState(false);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("6359193816");
-  const [password, setPassword] = useState("Admin@12345");
+  const [mobileNo, setMobileNo] = useState("");
+  const [password, setPassword] = useState("");
   const [userType, setUserType] = useState('Doctor');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [mobileNoError, setMobileNoError] = useState<string | null>(null);
   const showInternetModel = !isConnected && !isInternetReachable
@@ -173,8 +173,6 @@ function AppContent() {
 
       const encryptedPassword = encryptText(passwordPayload);
 
-      console.log('encryptedPassword :::', encryptedPassword)
-
       // API payload (UPDATED)
       const payload = {
         user: {
@@ -207,6 +205,7 @@ function AppContent() {
       // Error handling
       if (!res.ok || data?.statusState !== "success") {
         Alert.alert("Login Failed", data?.message || "Unable to sign in");
+        setLoading(false);
         return;
       }
 
@@ -216,9 +215,8 @@ function AppContent() {
       isFirstWebLoadRef.current = true;
       setInitialWebUrl(LOGIN_URL);
       setShowWeb(true);
-      setLoading(true);
 
-      /* ⏱️ START LOGIN WATCHDOG */
+      /* START LOGIN WATCHDOG */
       if (loginTimeoutRef.current) {
         clearTimeout(loginTimeoutRef.current);
       }
@@ -226,11 +224,11 @@ function AppContent() {
       loginTimeoutRef.current = setTimeout(async () => {
         const currentUrl = lastWebUrlRef.current;
 
-        console.log("⏱️ Login timeout check:", currentUrl);
+        console.log("Login timeout check:", currentUrl);
 
-        // ❌ Still stuck on login
+        // Still stuck on login
         if (!currentUrl || currentUrl.includes("/login")) {
-          console.log("❌ Auto-login failed, fallback to native login");
+          console.log("Auto-login failed, fallback to native login");
 
           await AsyncStorage.multiRemove([
             STORAGE_KEYS.IS_LOGGED_IN,
@@ -243,18 +241,19 @@ function AppContent() {
 
           Alert.alert(
             "Login Failed",
-            "Auto login falied. Please try again."
-            // "Something went wrong. Please try again."
+            // "Auto login falied. Please try again."
+            "Something went wrong. Please try again."
           );
         }
-      }, 15000);
+      }, 20000);
 
 
     } catch (e: any) {
       Alert.alert(
-        "Login Failed12",
+        "Login Failed",
         e.message || "Something went wrong. Please try again."
       );
+      setLoading(false);
     }
     // finally {
     //   setLoading(false);
@@ -279,7 +278,7 @@ function AppContent() {
 
   const handleNavigationStateChange = async (navState: any) => {
     const url = navState.url.toLowerCase();
-    lastWebUrlRef.current = url; // 👈 track latest URL
+    lastWebUrlRef.current = url;
 
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
@@ -287,7 +286,7 @@ function AppContent() {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
-      // ✅ SUCCESS → clear timeout
+      // SUCCESS → clear timeout
       if (loginTimeoutRef.current) {
         clearTimeout(loginTimeoutRef.current);
         loginTimeoutRef.current = null;
@@ -315,17 +314,17 @@ function AppContent() {
 
 
   const disableZoomScript = `
-  (function () {
-    var meta = document.createElement('meta');
-    meta.setAttribute('name', 'viewport');
-    meta.setAttribute(
-      'content',
-      'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
-    );
-    document.getElementsByTagName('head')[0].appendChild(meta);
-  })();
-  true;
-`;
+    (function () {
+      var meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
+      meta.setAttribute(
+        'content',
+        'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
+      );
+      document.getElementsByTagName('head')[0].appendChild(meta);
+    })();
+    true;
+  `;
 
 
   const autoFillScript = `
@@ -501,15 +500,25 @@ function AppContent() {
             </View>
 
             {/* Password Input */}
-            <View style={styles.inputWrapper}>
+            <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
               <TextInput
                 placeholder="Password"
                 placeholderTextColor="#999"
-                secureTextEntry
+                secureTextEntry={!passwordVisible}
                 style={styles.input}
                 value={password}
                 onChangeText={setPassword}
               />
+              <TouchableOpacity
+                onPress={() => setPasswordVisible(!passwordVisible)}
+                style={styles.eyeButton}
+              >
+                <Icon
+                  name={passwordVisible ? "visibility" : "visibility-off"}
+                  size={20}
+                  color="#666"
+                />
+              </TouchableOpacity>
             </View>
 
             {/* Login Button */}
@@ -550,57 +559,13 @@ function AppContent() {
 
 /* ================= STYLES ================= */
 const styles = StyleSheet.create({
-  // container: {
-  //   flex: 1,
-  //   backgroundColor: "#5a8db8",
-  //   justifyContent: "center",
-  //   alignItems: "center",
-  // },
-  card: {
-    width: "88%",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 25,
-    elevation: 6,
-  },
-  // logo: {
-  //   width: 200,
-  //   height: 150,
-  //   resizeMode: "contain",
-  //   alignSelf: "center",
-  //   marginBottom: -20,
-  //   marginTop: -30,
-  // },
-  title: {
-    textAlign: "center",
-    fontSize: 20,
-    marginBottom: 10,
-    fontWeight: "600",
-  },
-  // subtitle: {
-  //   textAlign: "center",
-  //   fontSize: 13,
-  //   color: "#666",
-  //   marginBottom: 20,
-  //   marginTop: 20,
-  // },
-  // input: {
-  //   borderWidth: 1,
-  //   borderColor: "#ccc",
-  //   borderRadius: 6,
-  //   height: 45,
-  //   paddingHorizontal: 10,
-  //   marginBottom: 12,
-  //   color: "#000",
-  // },
   errorText: {
     color: "red",
     fontSize: 12,
-    // marginTop: 4,
-    // marginBottom: 8,
-    // marginLeft: 4,
   },
-
+  eyeButton: {
+    padding: 5
+  },
   button: {
     backgroundColor: "#0b3d6e",
     height: 45,
