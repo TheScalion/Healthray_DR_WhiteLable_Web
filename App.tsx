@@ -24,7 +24,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useNetInfo } from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
 import Icon from 'react-native-vector-icons/MaterialIcons';
-
+import CookieManager from '@react-native-cookies/cookies';
 
 const LOGIN_URL = "https://heritage.healthray.com/login";
 
@@ -60,6 +60,7 @@ function AppContent() {
   const { isConnected, isInternetReachable } = useNetInfo()
 
   const [showWeb, setShowWeb] = useState(false);
+  const [webKey, setWebKey] = useState(0);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
   const [mobileNo, setMobileNo] = useState("");
   const [password, setPassword] = useState("");
@@ -146,6 +147,31 @@ function AppContent() {
     }
   };
 
+  const resetWebViewSession = async () => {
+    try {
+      // Clear all cookies (Android + iOS)
+      await CookieManager.clearAll(true).then((res) => {
+        console.log('clear cookie :::', res)
+      });
+
+      // Android needs flush
+      if (Platform.OS === 'android') {
+        try {
+          await CookieManager.flush();
+          console.log('Cookies flushed successfully');
+        } catch (e) {
+          console.log('flush error ::', e);
+        }
+      }
+
+      // Destroy old WebView & create new one
+      setWebKey(prev => prev + 1);
+      console.log('Refresh Cookie!!')
+
+    } catch (e) {
+      console.log('WebView reset error:', e);
+    }
+  };
 
   const handleLogin = async () => {
     if (!mobileNo || !password) {
@@ -212,6 +238,9 @@ function AppContent() {
       // Success
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
+      // CLEAR WEBVIEW SESSION ONCE
+      await resetWebViewSession();
+
       isFirstWebLoadRef.current = true;
       setInitialWebUrl(LOGIN_URL);
       setShowWeb(true);
@@ -242,10 +271,10 @@ function AppContent() {
           Alert.alert(
             "Login Failed",
             // "Auto login falied. Please try again."
-            "Something went wrong. Please try again."
+            "Something went wrong. Please try again or check your internet connection."
           );
         }
-      }, 20000);
+      }, 25000);
 
 
     } catch (e: any) {
@@ -367,7 +396,7 @@ function AppContent() {
             console.log('✅ Auto login triggered');
           }, 2500);
         } else {
-          setTimeout(autoLogin, 400);
+          setTimeout(autoLogin, 1000);
         }
       } catch (e) {
         console.log('❌ Auto login error:', e);
@@ -381,6 +410,7 @@ function AppContent() {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
         <WebView
+          key={webKey}  //forces fresh WebView
           ref={webRef}
           source={{ uri: initialWebUrl }}
           style={{ flex: 1, opacity: loading ? 0 : 1 }}
@@ -394,6 +424,9 @@ function AppContent() {
           setDisplayZoomControls={false} // Android
           bounces={false}                // iOS
           scrollEnabled={true}
+
+          incognito                   // extra safety
+          cacheEnabled={false}         // Android safety
 
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
@@ -668,6 +701,7 @@ const styles = StyleSheet.create({
   input: {
     height: 45,
     fontSize: 15,
+    width: "90%",
   },
   loginBtn: {
     width: '100%',
