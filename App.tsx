@@ -421,8 +421,8 @@ function AppContent() {
           injectedJavaScript={disableZoomScript}
           scalesPageToFit={false}        // Android
           setBuiltInZoomControls={false} // Android
-          setDisplayZoomControls={false} // Android
-          bounces={false}                // iOS
+          setDisplayZoomControls={false}
+          bounces={false}
           scrollEnabled={true}
 
           incognito                   // extra safety
