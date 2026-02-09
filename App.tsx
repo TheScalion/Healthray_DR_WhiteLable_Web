@@ -26,7 +26,7 @@ import CryptoJS from 'crypto-js';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import CookieManager from '@react-native-cookies/cookies';
 
-const LOGIN_URL = "https://heritage.healthray.com/login";
+const LOGIN_URL = "https://ray.healthray.com/login";
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -213,7 +213,7 @@ function AppContent() {
 
       // API call
       const res = await fetch(
-        "https://heritagenode.healthray.com/api/v2/users/sign_in",
+        "https://node.healthray.com/api/v2/users/sign_in",
         {
           method: "POST",
           headers: {
@@ -239,7 +239,7 @@ function AppContent() {
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
       // CLEAR WEBVIEW SESSION ONCE
-      await resetWebViewSession();
+      // await resetWebViewSession();
 
       isFirstWebLoadRef.current = true;
       setInitialWebUrl(LOGIN_URL);
@@ -300,7 +300,7 @@ function AppContent() {
       }, 800);
     }
 
-    if (url.includes("/patients")) {
+    if (url.includes("/select-organization")) {
       setTimeout(() => setLoading(false), 1500);
     }
   };
@@ -311,7 +311,7 @@ function AppContent() {
 
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
-    if (url.includes("/patients")) {
+    if (url.includes("/select-organization")) {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
@@ -410,7 +410,7 @@ function AppContent() {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
         <WebView
-          key={webKey}  //forces fresh WebView
+          // key={webKey}  //forces fresh WebView
           ref={webRef}
           source={{ uri: initialWebUrl }}
           style={{ flex: 1, opacity: loading ? 0 : 1 }}
@@ -425,8 +425,8 @@ function AppContent() {
           bounces={false}
           scrollEnabled={true}
 
-          incognito                   // extra safety
-          cacheEnabled={false}         // Android safety
+          // incognito                   // extra safety
+          // cacheEnabled={false}         // Android safety
 
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
@@ -477,7 +477,7 @@ function AppContent() {
           <View style={styles.container}>
             {/* Logo */}
             <Image
-              source={require('./src/common/HIMSlogo.png')}
+              source={require('./src/common/Healthraylogo.png')}
               style={styles.logo}
               resizeMode="contain"
             />
@@ -513,18 +513,25 @@ function AppContent() {
 
             {/* Mobile Input */}
             <View style={styles.inputWrapper}>
-              <TextInput
-                placeholder="Mobile number"
-                placeholderTextColor="#999"
-                keyboardType="phone-pad"
-                maxLength={10}
-                style={styles.input}
-                value={mobileNo}
-                onChangeText={(text) => {
-                  setMobileNo(text);
-                  if (mobileNoError) setMobileNoError(null); // clear error while typing
-                }}
-              />
+              <View style={{ flexDirection: "row", alignItems: 'center', gap: 10 }}>
+                <Icon
+                  name="call"
+                  size={25}
+                  color="#666"
+                />
+                <TextInput
+                  placeholder="Mobile number"
+                  placeholderTextColor="#999"
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                  style={styles.input}
+                  value={mobileNo}
+                  onChangeText={(text) => {
+                    setMobileNo(text);
+                    if (mobileNoError) setMobileNoError(null); // clear error while typing
+                  }}
+                />
+              </View>
               {mobileNoError && (
                 <Text style={styles.errorText}>
                   {mobileNoError}
@@ -533,7 +540,12 @@ function AppContent() {
             </View>
 
             {/* Password Input */}
-            <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
+            <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }]}>
+              <Icon
+                name="lock"
+                size={25}
+                color="#666"
+              />
               <TextInput
                 placeholder="Password"
                 placeholderTextColor="#999"
@@ -701,7 +713,7 @@ const styles = StyleSheet.create({
   input: {
     height: 45,
     fontSize: 15,
-    width: "90%",
+    width: "80%",
   },
   loginBtn: {
     width: '100%',
