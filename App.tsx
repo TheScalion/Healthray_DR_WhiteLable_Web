@@ -36,6 +36,7 @@ const STORAGE_KEYS = {
 
 const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
+const IS_TABLET = width >= 768;
 
 
 export default function App() {
@@ -245,36 +246,36 @@ function AppContent() {
       setInitialWebUrl(LOGIN_URL);
       setShowWeb(true);
 
-      /* START LOGIN WATCHDOG */
-      if (loginTimeoutRef.current) {
-        clearTimeout(loginTimeoutRef.current);
-      }
+      // /* START LOGIN WATCHDOG */
+      // if (loginTimeoutRef.current) {
+      //   clearTimeout(loginTimeoutRef.current);
+      // }
 
-      loginTimeoutRef.current = setTimeout(async () => {
-        const currentUrl = lastWebUrlRef.current;
+      // loginTimeoutRef.current = setTimeout(async () => {
+      //   const currentUrl = lastWebUrlRef.current;
 
-        console.log("Login timeout check:", currentUrl);
+      //   console.log("Login timeout check:", currentUrl);
 
-        // Still stuck on login
-        if (!currentUrl || currentUrl.includes("/login")) {
-          console.log("Auto-login failed, fallback to native login");
+      //   // Still stuck on login
+      //   if (!currentUrl || currentUrl.includes("/login")) {
+      //     console.log("Auto-login failed, fallback to native login");
 
-          await AsyncStorage.multiRemove([
-            STORAGE_KEYS.IS_LOGGED_IN,
-            STORAGE_KEYS.SAVE_WEB_URL,
-          ]);
+      //     await AsyncStorage.multiRemove([
+      //       STORAGE_KEYS.IS_LOGGED_IN,
+      //       STORAGE_KEYS.SAVE_WEB_URL,
+      //     ]);
 
-          wasLoggedInRef.current = false;
-          setShowWeb(false);
-          setLoading(false);
+      //     wasLoggedInRef.current = false;
+      //     setShowWeb(false);
+      //     setLoading(false);
 
-          Alert.alert(
-            "Login Failed",
-            // "Auto login falied. Please try again."
-            "Something went wrong. Please try again or check your internet connection."
-          );
-        }
-      }, 25000);
+      //     Alert.alert(
+      //       "Login Failed",
+      //       // "Auto login falied. Please try again."
+      //       "Something went wrong. Please try again or check your internet connection."
+      //     );
+      //   }
+      // }, 25000);
 
 
     } catch (e: any) {
@@ -284,9 +285,9 @@ function AppContent() {
       );
       setLoading(false);
     }
-    // finally {
-    //   setLoading(false);
-    // }
+    finally {
+      setLoading(false);
+    }
   };
 
 
@@ -315,11 +316,11 @@ function AppContent() {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
-      // SUCCESS → clear timeout
-      if (loginTimeoutRef.current) {
-        clearTimeout(loginTimeoutRef.current);
-        loginTimeoutRef.current = null;
-      }
+      // // SUCCESS → clear timeout
+      // if (loginTimeoutRef.current) {
+      //   clearTimeout(loginTimeoutRef.current);
+      //   loginTimeoutRef.current = null;
+      // }
 
       setTimeout(() => setLoading(false), 1500);
       return;
@@ -456,6 +457,144 @@ function AppContent() {
     );
   }
 
+  const renderMobileUI = () => (
+    <>
+      {!IS_TABLET && (
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Login Here</Text>
+        </View>)}
+
+      <ScrollView
+        contentContainerStyle={{ flexGrow: 1 }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.container}>
+          {/* Logo */}
+          <Image
+            source={require('./src/common/Healthraylogo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+
+          {/* Subtitle */}
+          <Text style={styles.subtitle}>
+            Glad to see you back. Please login to start chatting with your
+            patient.
+          </Text>
+
+          {/* Doctor / Staff Switch */}
+          <View style={styles.segment}>
+            {['Doctor', 'Invitee'].map((item, index) => (
+              <TouchableOpacity
+                key={item}
+                style={[
+                  styles.segmentBtn,
+                  userType === item && styles.segmentActive,
+                ]}
+                onPress={() => setUserType(index === 1 ? "Invitee" : "Doctor")}
+              >
+                <Text
+                  style={[
+                    styles.segmentText,
+                    userType === item && styles.segmentTextActive,
+                  ]}
+                >
+                  {item === "Invitee" ? "Staff" : "Doctor"}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Mobile Input */}
+          <View style={styles.inputWrapper}>
+            <View style={{ flexDirection: "row", alignItems: 'center', gap: 10 }}>
+              <Icon
+                name="call"
+                size={25}
+                color="#666"
+              />
+              <TextInput
+                placeholder="Mobile number"
+                placeholderTextColor="#999"
+                keyboardType="phone-pad"
+                maxLength={10}
+                style={styles.input}
+                value={mobileNo}
+                onChangeText={(text) => {
+                  setMobileNo(text);
+                  if (mobileNoError) setMobileNoError(null); // clear error while typing
+                }}
+              />
+            </View>
+            {mobileNoError && (
+              <Text style={styles.errorText}>
+                {mobileNoError}
+              </Text>
+            )}
+          </View>
+
+          {/* Password Input */}
+          <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }]}>
+            <Icon
+              name="lock"
+              size={25}
+              color="#666"
+            />
+            <TextInput
+              placeholder="Password"
+              placeholderTextColor="#999"
+              secureTextEntry={!passwordVisible}
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+            />
+            <TouchableOpacity
+              onPress={() => setPasswordVisible(!passwordVisible)}
+              style={styles.eyeButton}
+            >
+              <Icon
+                name={passwordVisible ? "visibility" : "visibility-off"}
+                size={20}
+                color="#666"
+              />
+            </TouchableOpacity>
+          </View>
+
+          {/* Login Button */}
+          <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
+            <Text style={styles.loginText}>Login</Text>
+          </TouchableOpacity>
+
+          {/* Forgot */}
+          {/* <TouchableOpacity>
+              <Text style={styles.forgotText}>Forgot Your Password ?</Text>
+            </TouchableOpacity> */}
+        </View>
+      </ScrollView>
+
+      {loading && (
+        <View style={styles.overlay}>
+          <ActivityIndicator size="large" color="#576bff" />
+        </View>
+      )}
+
+      <Modal visible={showInternetModel} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>No Internet</Text>
+            <Text style={styles.modalText}>
+              Please check your internet connection
+            </Text>
+            <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]} >
+              <Text style={styles.buttonText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+
   /* ================= LOGIN UI ================= */
   return (
     <KeyboardAvoidingView
@@ -464,139 +603,37 @@ function AppContent() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
     >
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Login Here</Text>
-        </View>
-
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1 }}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.container}>
-            {/* Logo */}
-            <Image
-              source={require('./src/common/Healthraylogo.png')}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-
-            {/* Subtitle */}
-            <Text style={styles.subtitle}>
-              Glad to see you back. Please login to start chatting with your
-              patient.
-            </Text>
-
-            {/* Doctor / Staff Switch */}
-            <View style={styles.segment}>
-              {['Doctor', 'Invitee'].map((item, index) => (
-                <TouchableOpacity
-                  key={item}
-                  style={[
-                    styles.segmentBtn,
-                    userType === item && styles.segmentActive,
-                  ]}
-                  onPress={() => setUserType(index === 1 ? "Invitee" : "Doctor")}
-                >
-                  <Text
-                    style={[
-                      styles.segmentText,
-                      userType === item && styles.segmentTextActive,
-                    ]}
-                  >
-                    {item === "Invitee" ? "Staff" : "Doctor"}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+        {IS_TABLET ? (
+          <>
+            <View style={styles.header}>
+              <Text style={styles.headerTitle}>Login Here</Text>
             </View>
 
-            {/* Mobile Input */}
-            <View style={styles.inputWrapper}>
-              <View style={{ flexDirection: "row", alignItems: 'center', gap: 10 }}>
-                <Icon
-                  name="call"
-                  size={25}
-                  color="#666"
-                />
-                <TextInput
-                  placeholder="Mobile number"
-                  placeholderTextColor="#999"
-                  keyboardType="phone-pad"
-                  maxLength={10}
-                  style={styles.input}
-                  value={mobileNo}
-                  onChangeText={(text) => {
-                    setMobileNo(text);
-                    if (mobileNoError) setMobileNoError(null); // clear error while typing
-                  }}
+
+            <View style={{ flex: 1, flexDirection: 'row' }}>
+
+              <View style={styles.tabletLeft}>
+                <Image
+                  source={require('./src/common/BannerLogo.png')}
+                  style={styles.tabletImage}
+                  resizeMode="contain"
                 />
               </View>
-              {mobileNoError && (
-                <Text style={styles.errorText}>
-                  {mobileNoError}
-                </Text>
-              )}
+
+              {/* RIGHT LOGIN */}
+              <View style={styles.tabletRight}>
+                {renderMobileUI()}
+              </View>
+
             </View>
+          </>
+          // renderMobileUI()
 
-            {/* Password Input */}
-            <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }]}>
-              <Icon
-                name="lock"
-                size={25}
-                color="#666"
-              />
-              <TextInput
-                placeholder="Password"
-                placeholderTextColor="#999"
-                secureTextEntry={!passwordVisible}
-                style={styles.input}
-                value={password}
-                onChangeText={setPassword}
-              />
-              <TouchableOpacity
-                onPress={() => setPasswordVisible(!passwordVisible)}
-                style={styles.eyeButton}
-              >
-                <Icon
-                  name={passwordVisible ? "visibility" : "visibility-off"}
-                  size={20}
-                  color="#666"
-                />
-              </TouchableOpacity>
-            </View>
-
-            {/* Login Button */}
-            <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
-              <Text style={styles.loginText}>Login</Text>
-            </TouchableOpacity>
-
-            {/* Forgot */}
-            {/* <TouchableOpacity>
-              <Text style={styles.forgotText}>Forgot Your Password ?</Text>
-            </TouchableOpacity> */}
-          </View>
-        </ScrollView>
-
-        {loading && (
-          <View style={styles.overlay}>
-            <ActivityIndicator size="large" color="#576bff" />
-          </View>
+        ) : (
+          /* MOBILE LAYOUT */
+          renderMobileUI()
         )}
 
-        <Modal visible={showInternetModel} transparent animationType="fade">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>No Internet</Text>
-              <Text style={styles.modalText}>
-                Please check your internet connection
-              </Text>
-              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]} >
-                <Text style={styles.buttonText}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
@@ -666,7 +703,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     alignItems: 'center',
-    paddingHorizontal: width * 0.08,
+    paddingHorizontal: IS_TABLET ? width * 0.05 : width * 0.08,
   },
   logo: {
     width: width * 0.5,
@@ -681,7 +718,7 @@ const styles = StyleSheet.create({
   },
   segment: {
     flexDirection: 'row',
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: '#114DAA',
     borderRadius: 8,
     overflow: 'hidden',
@@ -733,6 +770,22 @@ const styles = StyleSheet.create({
     color: '#114DAA',
     fontWeight: '600',
     textDecorationLine: 'underline',
+  },
+  tabletLeft: {
+    width: '65%',
+    backgroundColor: '#EAF4FB',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+
+  tabletImage: {
+    width: '80%',
+    height: '80%',
+  },
+
+  tabletRight: {
+    width: '35%',
+    justifyContent: 'center',
   },
 });
 
