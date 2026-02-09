@@ -69,10 +69,20 @@ function AppContent() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [mobileNoError, setMobileNoError] = useState<string | null>(null);
-  const showInternetModel = !isConnected && !isInternetReachable
+  const [netInfoReady, setNetInfoReady] = useState(false);
+  const showInternetModel =
+    netInfoReady && !isConnected && !isInternetReachable;
 
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setNetInfoReady(true);
+    }, 1500); // 1.5 seconds delay (you can tune)
+
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
