@@ -43,11 +43,11 @@ const IS_TABLET = width >= 768;
 
 
 
-const BASE_URL = 'https://node.healthray.com/api/';
+const BASE_URL = 'https://node.healthray.com/api/v1/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/app/id1513592834';
-const PLAYSTORE_URL = 'https://play.google.com/store';
+const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
 
 
 export default function App() {
@@ -195,27 +195,33 @@ function AppContent() {
         user_type: 'D',
       };
 
-      console.log('Version ==>>', DeviceInfo.getVersion)
+      console.log('📡 Calling API with params:', params);
 
-      const response = await fetch(`${BASE_URL}${BUILD_MANAGMENT_API}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(params),
-      });
+      const response = await axios.post(
+        `${BASE_URL}${BUILD_MANAGMENT_API}`,
+        params,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          timeout: 15000, // optional but useful
+        }
+      );
 
-      const json = await response.json();
+      console.log('✅ Axios response:', response.data);
 
-      if (!response.ok) {
-        console.log('API error:', json);
-        return;
-      }
+      handleBuildVersionResponse(response.data);
 
-      handleBuildVersionResponse(json);
     } catch (error) {
-      console.log('buildVersionManagement error:', error);
+      // Axios gives better error info
+      if (axios.isAxiosError(error)) {
+        console.log('❌ Axios error message:', error.message);
+        console.log('❌ Status:', error.response?.status);
+        console.log('❌ Response data:', error.response?.data);
+      } else {
+        console.log('❌ Unknown error:', error);
+      }
     }
   };
 
