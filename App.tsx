@@ -69,6 +69,7 @@ function AppContent() {
   const isFirstWebLoadRef = useRef(true);
   const lastWebUrlRef = useRef<string>('');
   const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevInternetRef = useRef<boolean | null>(null);
   const { isConnected, isInternetReachable } = useNetInfo()
 
   const [showWeb, setShowWeb] = useState(false);
@@ -105,6 +106,37 @@ function AppContent() {
     buildVersionManagement();
   }, []);
 
+
+  useEffect(() => {
+    // wait until netInfo is ready
+    if (!netInfoReady) return;
+
+    const isOnline = isConnected && isInternetReachable;
+
+    // Detect OFF -> ON
+    if (prevInternetRef.current === false && isOnline) {
+      console.log('Internet restored');
+
+      (async () => {
+        const lastUrl = await AsyncStorage.getItem(
+          STORAGE_KEYS.SAVE_WEB_URL
+        );
+
+        if (lastUrl && webRef.current) {
+          console.log('Reloading last URL:', lastUrl);
+
+          // Option 1 (BEST): reload current page
+          webRef.current.reload();
+
+          // Option 2 (fallback if reload fails)
+          // setInitialWebUrl(lastUrl);
+          // setWebKey(prev => prev + 1);
+        }
+      })();
+    }
+
+    prevInternetRef.current = isOnline;
+  }, [isConnected, isInternetReachable, netInfoReady]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -191,7 +223,7 @@ function AppContent() {
     try {
       const params = {
         platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
-        build_version: DeviceInfo.getVersion(),
+        current_version: DeviceInfo.getVersion(),
         user_type: 'D',
       };
 
@@ -599,7 +631,18 @@ function AppContent() {
               <Text style={styles.modalText}>
                 Please check your internet connection
               </Text>
-              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]} >
+              <TouchableOpacity
+                style={[styles.button, { paddingHorizontal: 12 }]}
+                onPress={async () => {
+                  const lastUrl = await AsyncStorage.getItem(
+                    STORAGE_KEYS.SAVE_WEB_URL
+                  );
+
+                  if (lastUrl && webRef.current) {
+                    webRef.current.reload();
+                  }
+                }}
+              >
                 <Text style={styles.buttonText}>Try again</Text>
               </TouchableOpacity>
             </View>
@@ -902,7 +945,7 @@ const styles = StyleSheet.create({
   input: {
     height: 45,
     fontSize: 15,
-    width: "80%",
+    width: "75%",
     color: '#000',
   },
   loginBtn: {
