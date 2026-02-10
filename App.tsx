@@ -46,7 +46,7 @@ const IS_TABLET = width >= 768;
 const BASE_URL = 'https://node.healthray.com/api/v1/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
-const ITUNES_URL = 'https://apps.apple.com/app/id1513592834';
+const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
 const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
 
 
@@ -103,7 +103,7 @@ function AppContent() {
 
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
-    buildVersionManagement();
+    // buildVersionManagement();
   }, []);
 
 
@@ -633,15 +633,15 @@ function AppContent() {
               </Text>
               <TouchableOpacity
                 style={[styles.button, { paddingHorizontal: 12 }]}
-                onPress={async () => {
-                  const lastUrl = await AsyncStorage.getItem(
-                    STORAGE_KEYS.SAVE_WEB_URL
-                  );
+              // onPress={async () => {
+              //   const lastUrl = await AsyncStorage.getItem(
+              //     STORAGE_KEYS.SAVE_WEB_URL
+              //   );
 
-                  if (lastUrl && webRef.current) {
-                    webRef.current.reload();
-                  }
-                }}
+              //   if (lastUrl && webRef.current) {
+              //     webRef.current.reload();
+              //   }
+              // }}
               >
                 <Text style={styles.buttonText}>Try again</Text>
               </TouchableOpacity>

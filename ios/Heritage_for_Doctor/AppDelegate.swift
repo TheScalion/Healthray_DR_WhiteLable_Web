@@ -32,6 +32,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     return true
   }
 }
+// 🔒 LOCK ORIENTATION HERE
+ func application(
+   _ application: UIApplication,
+   supportedInterfaceOrientationsFor window: UIWindow?
+ ) -> UIInterfaceOrientationMask {
+   return .landscapeRight
+ }
 
 class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
   override func sourceURL(for bridge: RCTBridge) -> URL? {
