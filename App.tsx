@@ -25,6 +25,9 @@ import { useNetInfo } from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 // import CookieManager from '@react-native-cookies/cookies';
+import DeviceInfo from 'react-native-device-info';
+import axios from 'axios';
+import { Linking } from 'react-native';
 
 const LOGIN_URL = "https://ray.healthray.com/login";
 
@@ -37,6 +40,16 @@ const STORAGE_KEYS = {
 const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
 const IS_TABLET = width >= 768;
+
+const [userBasicData, setUserBasicData] = useState<any>(null);
+const [showMaintenance, setShowMaintenance] = useState(false);
+const [maintenanceMessage, setMaintenanceMessage] = useState('');
+
+const BASE_URL = 'https://node.healthray.com/api/';
+const BUILD_MANAGMENT_API = 'build_management/check_update_required';
+
+const ITUNES_URL = 'https://apps.apple.com/app/id1513592834';
+const PLAYSTORE_URL = 'https://play.google.com/store';
 
 
 export default function App() {
@@ -73,9 +86,23 @@ function AppContent() {
   const showInternetModel =
     netInfoReady && !isConnected && !isInternetReachable;
 
+  const getStoreUrl = () => {
+    if (Platform.OS === 'ios') {
+      return userBasicData?.ios_app_url && userBasicData.ios_app_url !== ''
+        ? userBasicData.ios_app_url
+        : ITUNES_URL;
+    }
+
+    return userBasicData?.android_app_url && userBasicData.android_app_url !== ''
+      ? userBasicData.android_app_url
+      : PLAYSTORE_URL;
+  };
+
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
+    buildVersionManagement();
   }, []);
+
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -157,6 +184,87 @@ function AppContent() {
       return null;
     }
   };
+
+  const buildVersionManagement = async () => {
+    try {
+      const params = {
+        platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
+        build_version: DeviceInfo.getVersion(), // same as Bundle.releaseVersionNumber
+        user_type: 'D',
+      };
+
+      const response = await fetch(`${BASE_URL}${BUILD_MANAGMENT_API}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(params),
+      });
+
+      const json = await response.json();
+
+      if (!response.ok) {
+        console.log('API error:', json);
+        return;
+      }
+
+      handleBuildVersionResponse(json);
+    } catch (error) {
+      console.log('buildVersionManagement error:', error);
+    }
+  };
+
+  const handleBuildVersionResponse = (response: any) => {
+    const statusCode = response?.status;
+    const message = response?.message ?? '';
+    const data = response?.data ?? {};
+
+    // same as objUserBasicData
+    setUserBasicData(data);
+
+    // ===== 701 FORCE UPDATE =====
+    if (statusCode === 701) {
+      Alert.alert(
+        'Healthray',
+        message,
+        [
+          {
+            text: 'Update',
+            onPress: () => Linking.openURL(getStoreUrl()),
+          },
+        ],
+        { cancelable: false }
+      );
+      return;
+    }
+
+    // ===== 702 OPTIONAL UPDATE =====
+    if (statusCode === 702) {
+      Alert.alert(
+        'Healthray',
+        message,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Update',
+            onPress: () => Linking.openURL(getStoreUrl()),
+          },
+        ]
+      );
+      return;
+    }
+
+    // ===== 703 MAINTENANCE =====
+    if (statusCode === 703) {
+      setMaintenanceMessage(message);
+      setShowMaintenance(true);
+      return;
+    }
+
+    console.log('✅ App is up to date');
+  };
+
 
   // const resetWebViewSession = async () => {
   //   try {
@@ -417,6 +525,30 @@ function AppContent() {
   `;
 
   /* ================= WEB VIEW ================= */
+
+  if (showMaintenance) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: '#fff',
+          padding: 20,
+        }}
+      >
+        <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 10 }}>
+          Under Maintenance
+        </Text>
+        <Text style={{ textAlign: 'center', fontSize: 14 }}>
+          {maintenanceMessage || 'Please try again later.'}
+        </Text>
+      </SafeAreaView>
+    );
+  }
+
+
+
   if (showWeb) {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
