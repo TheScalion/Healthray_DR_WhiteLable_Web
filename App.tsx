@@ -24,7 +24,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useNetInfo } from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
 import Icon from 'react-native-vector-icons/MaterialIcons';
-import CookieManager from '@react-native-cookies/cookies';
+// import CookieManager from '@react-native-cookies/cookies';
 
 const LOGIN_URL = "https://ray.healthray.com/login";
 
@@ -158,31 +158,31 @@ function AppContent() {
     }
   };
 
-  const resetWebViewSession = async () => {
-    try {
-      // Clear all cookies (Android + iOS)
-      await CookieManager.clearAll(true).then((res) => {
-        console.log('clear cookie :::', res)
-      });
+  // const resetWebViewSession = async () => {
+  //   try {
+  //     // Clear all cookies (Android + iOS)
+  //     await CookieManager.clearAll(true).then((res) => {
+  //       console.log('clear cookie :::', res)
+  //     });
 
-      // Android needs flush
-      if (Platform.OS === 'android') {
-        try {
-          await CookieManager.flush();
-          console.log('Cookies flushed successfully');
-        } catch (e) {
-          console.log('flush error ::', e);
-        }
-      }
+  //     // Android needs flush
+  //     if (Platform.OS === 'android') {
+  //       try {
+  //         await CookieManager.flush();
+  //         console.log('Cookies flushed successfully');
+  //       } catch (e) {
+  //         console.log('flush error ::', e);
+  //       }
+  //     }
 
-      // Destroy old WebView & create new one
-      setWebKey(prev => prev + 1);
-      console.log('Refresh Cookie!!')
+  //     // Destroy old WebView & create new one
+  //     setWebKey(prev => prev + 1);
+  //     console.log('Refresh Cookie!!')
 
-    } catch (e) {
-      console.log('WebView reset error:', e);
-    }
-  };
+  //   } catch (e) {
+  //     console.log('WebView reset error:', e);
+  //   }
+  // };
 
   const handleLogin = async () => {
     if (!mobileNo || !password) {
@@ -256,36 +256,36 @@ function AppContent() {
       setInitialWebUrl(LOGIN_URL);
       setShowWeb(true);
 
-      // /* START LOGIN WATCHDOG */
-      // if (loginTimeoutRef.current) {
-      //   clearTimeout(loginTimeoutRef.current);
-      // }
+      /* START LOGIN WATCHDOG */
+      if (loginTimeoutRef.current) {
+        clearTimeout(loginTimeoutRef.current);
+      }
 
-      // loginTimeoutRef.current = setTimeout(async () => {
-      //   const currentUrl = lastWebUrlRef.current;
+      loginTimeoutRef.current = setTimeout(async () => {
+        const currentUrl = lastWebUrlRef.current;
 
-      //   console.log("Login timeout check:", currentUrl);
+        console.log("Login timeout check:", currentUrl);
 
-      //   // Still stuck on login
-      //   if (!currentUrl || currentUrl.includes("/login")) {
-      //     console.log("Auto-login failed, fallback to native login");
+        // Still stuck on login
+        if (!currentUrl || currentUrl.includes("/login")) {
+          console.log("Auto-login failed, fallback to native login");
 
-      //     await AsyncStorage.multiRemove([
-      //       STORAGE_KEYS.IS_LOGGED_IN,
-      //       STORAGE_KEYS.SAVE_WEB_URL,
-      //     ]);
+          await AsyncStorage.multiRemove([
+            STORAGE_KEYS.IS_LOGGED_IN,
+            STORAGE_KEYS.SAVE_WEB_URL,
+          ]);
 
-      //     wasLoggedInRef.current = false;
-      //     setShowWeb(false);
-      //     setLoading(false);
+          wasLoggedInRef.current = false;
+          setShowWeb(false);
+          setLoading(false);
 
-      //     Alert.alert(
-      //       "Login Failed",
-      //       // "Auto login falied. Please try again."
-      //       "Something went wrong. Please try again or check your internet connection."
-      //     );
-      //   }
-      // }, 25000);
+          Alert.alert(
+            "Login Failed",
+            // "Auto login falied. Please try again."
+            "Something went wrong. Please try again or check your internet connection."
+          );
+        }
+      }, 25000);
 
 
     } catch (e: any) {
@@ -295,9 +295,9 @@ function AppContent() {
       );
       setLoading(false);
     }
-    finally {
-      setLoading(false);
-    }
+    // finally {
+    //   setLoading(false);
+    // }
   };
 
 
@@ -326,11 +326,11 @@ function AppContent() {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
-      // // SUCCESS → clear timeout
-      // if (loginTimeoutRef.current) {
-      //   clearTimeout(loginTimeoutRef.current);
-      //   loginTimeoutRef.current = null;
-      // }
+      // SUCCESS → clear timeout
+      if (loginTimeoutRef.current) {
+        clearTimeout(loginTimeoutRef.current);
+        loginTimeoutRef.current = null;
+      }
 
       setTimeout(() => setLoading(false), 1500);
       return;
@@ -733,7 +733,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
     marginBottom: 30,
-    width: '100%',
+    width: '75%',
   },
   segmentBtn: {
     flex: 1,
@@ -761,6 +761,7 @@ const styles = StyleSheet.create({
     height: 45,
     fontSize: 15,
     width: "80%",
+    color: '#000',
   },
   loginBtn: {
     width: '100%',
