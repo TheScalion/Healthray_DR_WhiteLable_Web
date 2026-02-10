@@ -41,9 +41,7 @@ const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
 const IS_TABLET = width >= 768;
 
-const [userBasicData, setUserBasicData] = useState<any>(null);
-const [showMaintenance, setShowMaintenance] = useState(false);
-const [maintenanceMessage, setMaintenanceMessage] = useState('');
+
 
 const BASE_URL = 'https://node.healthray.com/api/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
@@ -85,6 +83,10 @@ function AppContent() {
   const [netInfoReady, setNetInfoReady] = useState(false);
   const showInternetModel =
     netInfoReady && !isConnected && !isInternetReachable;
+
+  const [userBasicData, setUserBasicData] = useState<any>(null);
+  const [showMaintenance, setShowMaintenance] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState('');
 
   const getStoreUrl = () => {
     if (Platform.OS === 'ios') {
@@ -189,9 +191,11 @@ function AppContent() {
     try {
       const params = {
         platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
-        build_version: DeviceInfo.getVersion(), // same as Bundle.releaseVersionNumber
+        build_version: DeviceInfo.getVersion(),
         user_type: 'D',
       };
+
+      console.log('Version ==>>', DeviceInfo.getVersion)
 
       const response = await fetch(`${BASE_URL}${BUILD_MANAGMENT_API}`, {
         method: 'POST',
