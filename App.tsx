@@ -29,7 +29,7 @@ import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
 
-const LOGIN_URL = "https://ray.healthray.com/login";
+const LOGIN_URL = "https://heritage.healthray.com/login";
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -43,7 +43,7 @@ const IS_TABLET = width >= 768;
 
 
 
-const BASE_URL = 'https://node.healthray.com/api/v1/';
+const BASE_URL = 'https://heritagenode.healthray.com/api/v2/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
@@ -268,7 +268,7 @@ function AppContent() {
     // ===== 701 FORCE UPDATE =====
     if (statusCode === 701) {
       Alert.alert(
-        'Healthray',
+        'HIMS',
         message,
         [
           {
@@ -284,7 +284,7 @@ function AppContent() {
     // ===== 702 OPTIONAL UPDATE =====
     if (statusCode === 702) {
       Alert.alert(
-        'Healthray',
+        'HIMS',
         message,
         [
           { text: 'Cancel', style: 'cancel' },
@@ -374,7 +374,7 @@ function AppContent() {
 
       // API call
       const res = await fetch(
-        "https://node.healthray.com/api/v2/users/sign_in",
+        "https://heritagenode.healthray.com/api/v2/users/sign_in",
         {
           method: "POST",
           headers: {
@@ -461,7 +461,7 @@ function AppContent() {
       }, 800);
     }
 
-    if (url.includes("/select-organization")) {
+    if (url.includes("/patients")) {
       setTimeout(() => setLoading(false), 1500);
     }
   };
@@ -472,7 +472,7 @@ function AppContent() {
 
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
-    if (url.includes("/select-organization")) {
+    if (url.includes("/patients")) {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
@@ -667,7 +667,7 @@ function AppContent() {
         <View style={styles.container}>
           {/* Logo */}
           <Image
-            source={require('./src/common/Healthraylogo.png')}
+            source={require('./src/common/HIMSlogo.png')}
             style={styles.logo}
             resizeMode="contain"
           />
