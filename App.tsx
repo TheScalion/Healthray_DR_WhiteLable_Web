@@ -667,7 +667,7 @@ function AppContent() {
         <View style={styles.container}>
           {/* Logo */}
           <Image
-            source={require('./src/common/HIMSlogo.png')}
+            source={require('./src/common/HIMSLogo.png')}
             style={styles.logo}
             resizeMode="contain"
           />
