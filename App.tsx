@@ -768,11 +768,11 @@ function AppContent() {
         </View>
       </ScrollView>
 
-      {loading && (
+      {/* {loading && (
         <View style={styles.overlay}>
           <ActivityIndicator size="large" color="#576bff" />
         </View>
-      )}
+      )} */}
 
       <Modal visible={showInternetModel} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -827,6 +827,13 @@ function AppContent() {
         ) : (
           /* MOBILE LAYOUT */
           renderMobileUI()
+        )}
+
+        {/* FULL SCREEN LOADER */}
+        {loading && (
+          <View style={styles.overlay}>
+            <ActivityIndicator size="large" color="#576bff" />
+          </View>
         )}
 
       </SafeAreaView>
