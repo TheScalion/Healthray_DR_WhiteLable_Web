@@ -624,7 +624,7 @@ function AppContent() {
           </View>
         )}
 
-        <Modal visible={showInternetModel} transparent animationType="fade">
+        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalBox}>
               <Text style={styles.modalTitle}>No Internet</Text>
@@ -774,7 +774,7 @@ function AppContent() {
         </View>
       )} */}
 
-      <Modal visible={showInternetModel} transparent animationType="fade">
+      <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>No Internet</Text>
