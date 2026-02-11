@@ -80,11 +80,11 @@ android {
 
     namespace "com.heritage_for_doctor"
     defaultConfig {
-        applicationId "com.healthray.doctor"
+        applicationId "com.heritage.doctor"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 129
-        versionName "3.0"
+        versionCode 1
+        versionName "1.0"
     }
     signingConfigs {
         debug {
