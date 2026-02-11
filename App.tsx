@@ -877,7 +877,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalBox: {
-    width: '80%',
+    width: IS_TABLET ? '30%' : '80%',
     backgroundColor: 'white',
     padding: 20,
     borderRadius: 10,
