@@ -461,7 +461,7 @@ function AppContent() {
       }, 800);
     }
 
-    if (url.includes("/patients")) {
+    if (!url.includes("/login")) {
       setTimeout(() => setLoading(false), 1500);
     }
   };
@@ -472,7 +472,7 @@ function AppContent() {
 
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
-    if (url.includes("/patients")) {
+    if (!url.includes("/login")) {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
