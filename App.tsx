@@ -24,7 +24,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useNetInfo } from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
 import Icon from 'react-native-vector-icons/MaterialIcons';
-// import CookieManager from '@react-native-cookies/cookies';
+import CookieManager from '@react-native-cookies/cookies';
 import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
@@ -308,31 +308,31 @@ function AppContent() {
   };
 
 
-  // const resetWebViewSession = async () => {
-  //   try {
-  //     // Clear all cookies (Android + iOS)
-  //     await CookieManager.clearAll(true).then((res) => {
-  //       console.log('clear cookie :::', res)
-  //     });
+  const resetWebViewSession = async () => {
+    try {
+      // Clear all cookies (Android + iOS)
+      await CookieManager.clearAll(true).then((res) => {
+        console.log('clear cookie :::', res)
+      });
 
-  //     // Android needs flush
-  //     if (Platform.OS === 'android') {
-  //       try {
-  //         await CookieManager.flush();
-  //         console.log('Cookies flushed successfully');
-  //       } catch (e) {
-  //         console.log('flush error ::', e);
-  //       }
-  //     }
+      // Android needs flush
+      if (Platform.OS === 'android') {
+        try {
+          await CookieManager.flush();
+          console.log('Cookies flushed successfully');
+        } catch (e) {
+          console.log('flush error ::', e);
+        }
+      }
 
-  //     // Destroy old WebView & create new one
-  //     setWebKey(prev => prev + 1);
-  //     console.log('Refresh Cookie!!')
+      // Destroy old WebView & create new one
+      setWebKey(prev => prev + 1);
+      console.log('Refresh Cookie!!')
 
-  //   } catch (e) {
-  //     console.log('WebView reset error:', e);
-  //   }
-  // };
+    } catch (e) {
+      console.log('WebView reset error:', e);
+    }
+  };
 
   const handleLogin = async () => {
     if (!mobileNo || !password) {
@@ -400,7 +400,7 @@ function AppContent() {
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
       // CLEAR WEBVIEW SESSION ONCE
-      // await resetWebViewSession();
+      await resetWebViewSession();
 
       isFirstWebLoadRef.current = true;
       setInitialWebUrl(LOGIN_URL);
@@ -486,19 +486,22 @@ function AppContent() {
       return;
     }
 
-    if (
-      wasLoggedInRef.current &&
-      url.includes("/login") &&
-      isFirstWebLoadRef.current
-    ) {
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.IS_LOGGED_IN,
-        STORAGE_KEYS.SAVE_WEB_URL,
-      ]);
+    // login page detected after logged in → maybe logout
+    if (wasLoggedInRef.current && url.includes("/login")) {
 
-      wasLoggedInRef.current = false;
-      setShowWeb(false);
-      setLoading(false);
+      if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+
+      loginTimeoutRef.current = setTimeout(async () => {
+
+        if (lastWebUrlRef.current.includes("/login") && isFirstWebLoadRef.current) {
+
+          await AsyncStorage.clear();
+          wasLoggedInRef.current = false;
+          setShowWeb(false);
+          setLoading(false);
+        }
+
+      }, 1000);
     }
   };
 
