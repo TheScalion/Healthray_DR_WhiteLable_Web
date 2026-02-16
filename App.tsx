@@ -470,6 +470,8 @@ function AppContent() {
     const url = navState.url.toLowerCase();
     lastWebUrlRef.current = url;
 
+    console.log('Updated URL.....', url)
+
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
     if (url.includes("/select-organization")) {
@@ -518,53 +520,71 @@ function AppContent() {
 
 
   const autoFillScript = `
-      (function autoLogin() {
-      try {
-        const url = window.location.href;
-        console.log('✅ Page loaded:', url);
- 
-        if (!url.includes('/login')) {
-          return;
-        }
- 
-        const mobileInput = document.getElementById('mobile_no');
-        const passwordInput =
-          document.querySelector('#mat-input-1') ||
-          document.querySelector('input[type="password"]');
- 
-        const loginButton = document.querySelector('button.submit-button');
- 
-        const doctorButton = document.getElementById('mat-button-toggle-1-button');
-        const staffButton = document.getElementById('mat-button-toggle-2-button');
- 
-        const verificationType = '${userType}';
- 
-        if (verificationType.toLowerCase() === 'invitee') {
-          if (staffButton) staffButton.click();
-        } else {
-          if (doctorButton) doctorButton.click();
-        }
- 
-        if (mobileInput && passwordInput && loginButton) {
-          mobileInput.value = '${mobileNo}';
-          mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
- 
-          passwordInput.value = '${password}';
-          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
- 
-          setTimeout(() => {
-            loginButton.click();
-            console.log('✅ Auto login triggered');
-          }, 2500);
-        } else {
-          setTimeout(autoLogin, 1000);
-        }
-      } catch (e) {
-        console.log('❌ Auto login error:', e);
+  (function autoLogin() {
+
+    let attemptCount = 0;
+    const maxAttempts = 3;
+    const retryDelay = 5000; // EXACT 3 seconds between clicks
+
+    function performClick() {
+
+      if (attemptCount >= maxAttempts) {
+        console.log('🛑 Max login attempts reached');
+        return;
       }
-    })();
-    true;
-  `;
+
+      const url = window.location.href;
+      if (!url.includes('/login')) return;
+
+      const mobileInput = document.getElementById('mobile_no');
+      const passwordInput =
+        document.querySelector('#mat-input-1') ||
+        document.querySelector('input[type="password"]');
+
+      const loginButton = document.querySelector('button.submit-button');
+
+      const doctorButton = document.getElementById('mat-button-toggle-1-button');
+      const staffButton = document.getElementById('mat-button-toggle-2-button');
+
+      const verificationType = '${userType}';
+
+      if (verificationType.toLowerCase() === 'invitee') {
+        if (staffButton) staffButton.click();
+      } else {
+        if (doctorButton) doctorButton.click();
+      }
+
+      if (mobileInput && passwordInput && loginButton && !loginButton.disabled) {
+
+        mobileInput.value = '${mobileNo}';
+        mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+        passwordInput.value = '${password}';
+        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+        loginButton.click();
+        attemptCount++;
+
+        console.log('✅ Login attempt:', attemptCount);
+
+        if (attemptCount < maxAttempts) {
+          setTimeout(performClick, retryDelay); // STRICT 3 second gap
+        }
+
+      } else {
+        // Wait for elements only BEFORE first click
+        // setTimeout(performClick, 5000);
+      }
+    }
+
+    // First click after 2 seconds
+    setTimeout(performClick, 2000);
+
+  })();
+  true;
+`;
+
+
 
   /* ================= WEB VIEW ================= */
 
@@ -908,7 +928,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_TABLET ? width * 0.05 : width * 0.08,
   },
   logo: {
-    width: width * 0.5,
+    width: IS_TABLET ? width * 0.2 : width * 0.5,
     height: 120,
     marginTop: 30,
   },
