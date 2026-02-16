@@ -28,6 +28,12 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
+import RNFS from 'react-native-fs';
+import Share from 'react-native-share';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+
+
+
 
 const LOGIN_URL = "https://ray.healthray.com/login";
 
@@ -445,9 +451,9 @@ function AppContent() {
       );
       setLoading(false);
     }
-    // finally {
-    //   setLoading(false);
-    // }
+    finally {
+      setLoading(false);
+    }
   };
 
 
@@ -525,6 +531,7 @@ function AppContent() {
     let attemptCount = 0;
     const maxAttempts = 3;
     const retryDelay = 5000; // EXACT 3 seconds between clicks
+    const clickDelay = 2000;
 
     function performClick() {
 
@@ -556,11 +563,17 @@ function AppContent() {
 
       if (mobileInput && passwordInput && loginButton && !loginButton.disabled) {
 
-        mobileInput.value = '${mobileNo}';
-        mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      // Fill inputs
+      mobileInput.value = '${mobileNo}';
+      mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-        passwordInput.value = '${password}';
-        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+      passwordInput.value = '${password}';
+      passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      console.log('⏳ Waiting 2 seconds before click...');
+
+      // 👇 WAIT 2 SECONDS BEFORE CLICK
+      setTimeout(() => {
 
         loginButton.click();
         attemptCount++;
@@ -568,20 +581,19 @@ function AppContent() {
         console.log('✅ Login attempt:', attemptCount);
 
         if (attemptCount < maxAttempts) {
-          setTimeout(performClick, retryDelay); // STRICT 3 second gap
+          setTimeout(performClick, retryDelay);
         }
 
-      } else {
-        // Wait for elements only BEFORE first click
-        // setTimeout(performClick, 5000);
-      }
+      }, clickDelay);
+
     }
+  }
 
-    // First click after 2 seconds
-    setTimeout(performClick, 2000);
+  // Start after page loads (2 sec initial delay)
+  setTimeout(performClick, 2000);
 
-  })();
-  true;
+})();
+true;
 `;
 
 
@@ -611,6 +623,80 @@ function AppContent() {
 
 
 
+  const handleMessage = async (event: any) => {
+    try {
+      const message = JSON.parse(event.nativeEvent.data);
+
+      if (message.type === 'pdf') {
+        const base64Data = message.data.replace(
+          'data:application/pdf;base64,',
+          ''
+        );
+
+        const fileName = `Prescription_Rx_${Date.now()}.pdf`;
+
+        const path =
+          Platform.OS === 'android'
+            ? `${ReactNativeBlobUtil.fs.dirs.DownloadDir}/${fileName}`
+            : `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/${fileName}`;
+
+        // ✅ Save file
+        await ReactNativeBlobUtil.fs.writeFile(path, base64Data, 'base64');
+
+        console.log('PDF saved at:', path);
+
+        if (Platform.OS === 'android') {
+          // ✅ THIS WILL NOT CRASH
+          ReactNativeBlobUtil.android.actionViewIntent(
+            path,
+            'application/pdf'
+          );
+        } else {
+          await Share.open({
+            url: 'file://' + path,
+            type: 'application/pdf',
+            failOnCancel: false,
+          });
+        }
+      }
+    } catch (error) {
+      console.log('PDF Error:', error);
+    }
+  };
+
+  const combinedScript = `
+${disableZoomScript}
+
+(function() {
+  document.addEventListener('click', function(e) {
+    const element = e.target.closest('a');
+
+    if (element && element.href && element.href.startsWith('blob:')) {
+
+      fetch(element.href)
+        .then(res => res.blob())
+        .then(blob => {
+          const reader = new FileReader();
+          reader.onloadend = function() {
+            window.ReactNativeWebView.postMessage(
+              JSON.stringify({
+                type: 'pdf',
+                data: reader.result
+              })
+            );
+          };
+          reader.readAsDataURL(blob);
+        });
+
+      e.preventDefault();
+    }
+  });
+})();
+true;
+`;
+
+
+
   if (showWeb) {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
@@ -623,7 +709,8 @@ function AppContent() {
           domStorageEnabled
           mixedContentMode="always"
 
-          injectedJavaScript={disableZoomScript}
+          // injectedJavaScript={disableZoomScript}
+          injectedJavaScript={combinedScript}
           scalesPageToFit={false}        // Android
           setBuiltInZoomControls={false} // Android
           setDisplayZoomControls={false}
@@ -632,7 +719,7 @@ function AppContent() {
 
           // incognito                   // extra safety
           // cacheEnabled={false}         // Android safety
-
+          onMessage={handleMessage}
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
         />
