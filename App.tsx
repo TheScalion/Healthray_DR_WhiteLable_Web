@@ -452,9 +452,9 @@ function AppContent() {
       );
       setLoading(false);
     }
-    finally {
-      setLoading(false);
-    }
+    // finally {
+    //   setLoading(false);
+    // }
   };
 
 
