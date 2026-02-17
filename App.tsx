@@ -16,7 +16,8 @@ import {
   Platform,
   Dimensions,
   ScrollView,
-  PermissionsAndroid
+  PermissionsAndroid,
+  Keyboard
 } from "react-native";
 import { WebView, type WebView as WebViewType } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -32,6 +33,7 @@ import { Linking } from 'react-native';
 import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
 import ReactNativeBlobUtil from 'react-native-blob-util';
+import LottieView from 'lottie-react-native';
 
 
 
@@ -342,6 +344,7 @@ function AppContent() {
   // };
 
   const handleLogin = async () => {
+
     if (!mobileNo || !password) {
       Alert.alert("Error", "Enter mobile number & password");
       return;
@@ -356,7 +359,7 @@ function AppContent() {
     }
 
     setLoading(true);
-
+    Keyboard.dismiss()
     try {
 
       // Encrypt password
@@ -753,9 +756,18 @@ true;
 
 
         {loading && (
+          // <View style={styles.overlay}>
+          //   <ActivityIndicator size="large" color="#576bff" />
+          // </View>
           <View style={styles.overlay}>
-            <ActivityIndicator size="large" color="#576bff" />
+            <LottieView
+              source={require('./src/common/Loader.json')}
+              autoPlay
+              loop
+              style={styles.lottie}
+            />
           </View>
+
         )}
 
         <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
@@ -928,7 +940,7 @@ true;
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: '#fff' }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
     >
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
@@ -965,8 +977,16 @@ true;
 
         {/* FULL SCREEN LOADER */}
         {loading && (
+          // <View style={styles.overlay}>
+          //   <ActivityIndicator size="large" color="#576bff" />
+          // </View>
           <View style={styles.overlay}>
-            <ActivityIndicator size="large" color="#576bff" />
+            <LottieView
+              source={require('./src/common/Loader.json')}
+              autoPlay
+              loop
+              style={styles.lottie}
+            />
           </View>
         )}
 
@@ -1000,7 +1020,7 @@ const styles = StyleSheet.create({
   overlay: {
     position: "absolute",
     inset: 0,
-    backgroundColor: "rgba(255,255,255,0.6)",
+    backgroundColor: "rgb(38,42,50)",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -1123,6 +1143,10 @@ const styles = StyleSheet.create({
   tabletRight: {
     width: '35%',
     justifyContent: 'center',
+  },
+  lottie: {
+    width: 150,
+    height: 150,
   },
 });
 
