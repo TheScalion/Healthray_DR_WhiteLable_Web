@@ -16,6 +16,7 @@ import {
   Platform,
   Dimensions,
   ScrollView,
+  PermissionsAndroid
 } from "react-native";
 import { WebView, type WebView as WebViewType } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -627,38 +628,64 @@ true;
     try {
       const message = JSON.parse(event.nativeEvent.data);
 
-      if (message.type === 'pdf') {
-        const base64Data = message.data.replace(
-          'data:application/pdf;base64,',
-          ''
+      if (message?.type !== 'pdf') return;
+      if (!message?.data) return;
+
+      const base64Data = message.data.replace(
+        'data:application/pdf;base64,',
+        ''
+      );
+
+      if (Platform.OS === 'android') {
+
+        // 📂 Folder path
+        const folderPath =
+          ReactNativeBlobUtil.fs.dirs.DownloadDir +
+          '/HealthrayDR/HealthrayDocument';
+
+        const filePath = folderPath + '/Prescription.pdf';
+
+        // 📁 Create folder (ignore if exists)
+        await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
+
+        // 📄 Overwrite file (no delete needed)
+        await ReactNativeBlobUtil.fs.writeFile(
+          filePath,
+          base64Data,
+          'base64'
         );
 
-        const fileName = `Prescription_Rx_${Date.now()}.pdf`;
+        console.log('PDF saved at:', filePath);
 
-        const path =
-          Platform.OS === 'android'
-            ? `${ReactNativeBlobUtil.fs.dirs.DownloadDir}/${fileName}`
-            : `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/${fileName}`;
+        // 📖 Open PDF
+        await ReactNativeBlobUtil.android.actionViewIntent(
+          filePath,
+          'application/pdf'
+        );
 
-        // ✅ Save file
-        await ReactNativeBlobUtil.fs.writeFile(path, base64Data, 'base64');
+      } else {
 
-        console.log('PDF saved at:', path);
+        const folderPath =
+          ReactNativeBlobUtil.fs.dirs.DocumentDir +
+          '/HealthrayDR/HealthrayDocument';
 
-        if (Platform.OS === 'android') {
-          // ✅ THIS WILL NOT CRASH
-          ReactNativeBlobUtil.android.actionViewIntent(
-            path,
-            'application/pdf'
-          );
-        } else {
-          await Share.open({
-            url: 'file://' + path,
-            type: 'application/pdf',
-            failOnCancel: false,
-          });
-        }
+        const filePath = folderPath + '/Prescription.pdf';
+
+        await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
+
+        await ReactNativeBlobUtil.fs.writeFile(
+          filePath,
+          base64Data,
+          'base64'
+        );
+
+        await Share.open({
+          url: 'file://' + filePath,
+          type: 'application/pdf',
+          failOnCancel: false,
+        });
       }
+
     } catch (error) {
       console.log('PDF Error:', error);
     }
