@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   StatusBar,
   useColorScheme,
@@ -16,7 +15,6 @@ import {
   Platform,
   Dimensions,
   ScrollView,
-  PermissionsAndroid,
   Keyboard
 } from "react-native";
 import { WebView, type WebView as WebViewType } from "react-native-webview";
@@ -30,7 +28,6 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
-import RNFS from 'react-native-fs';
 import Share from 'react-native-share';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
@@ -938,60 +935,63 @@ true;
 
   /* ================= LOGIN UI ================= */
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#fff' }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-    >
-      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        {IS_TABLET ? (
-          <>
-            <View style={styles.header}>
-              <Text style={styles.headerTitle}>Login Here</Text>
-            </View>
-
-
-            <View style={{ flex: 1, flexDirection: 'row' }}>
-
-              <View style={styles.tabletLeft}>
-                <Image
-                  source={require('./src/common/BannerLogo.png')}
-                  style={styles.tabletImage}
-                  resizeMode="contain"
-                />
+    <>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: '#fff' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+      >
+        <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+          {IS_TABLET ? (
+            <>
+              <View style={styles.header}>
+                <Text style={styles.headerTitle}>Login Here</Text>
               </View>
 
-              {/* RIGHT LOGIN */}
-              <View style={styles.tabletRight}>
-                {renderMobileUI()}
+
+              <View style={{ flex: 1, flexDirection: 'row' }}>
+
+                <View style={styles.tabletLeft}>
+                  <Image
+                    source={require('./src/common/BannerLogo.png')}
+                    style={styles.tabletImage}
+                    resizeMode="contain"
+                  />
+                </View>
+
+                {/* RIGHT LOGIN */}
+                <View style={styles.tabletRight}>
+                  {renderMobileUI()}
+                </View>
+
               </View>
+            </>
+            // renderMobileUI()
 
-            </View>
-          </>
-          // renderMobileUI()
+          ) : (
+            /* MOBILE LAYOUT */
+            renderMobileUI()
+          )}
 
-        ) : (
-          /* MOBILE LAYOUT */
-          renderMobileUI()
-        )}
 
-        {/* FULL SCREEN LOADER */}
-        {loading && (
-          // <View style={styles.overlay}>
-          //   <ActivityIndicator size="large" color="#576bff" />
-          // </View>
-          <View style={styles.overlay}>
-            <LottieView
-              source={require('./src/common/Loader.json')}
-              autoPlay
-              loop
-              style={styles.lottie}
-            />
-          </View>
-        )}
+        </SafeAreaView>
+      </KeyboardAvoidingView>
 
-      </SafeAreaView>
-    </KeyboardAvoidingView>
+      {/* FULL SCREEN LOADER */}
+      {loading && (
+        // <View style={styles.overlay}>
+        //   <ActivityIndicator size="large" color="#576bff" />
+        // </View>
+        <View style={styles.overlay}>
+          <LottieView
+            source={require('./src/common/Loader.json')}
+            autoPlay
+            loop
+            style={styles.lottie}
+          />
+        </View>
+      )}
+    </>
   );
 }
 
