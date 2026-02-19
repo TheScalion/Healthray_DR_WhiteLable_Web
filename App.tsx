@@ -438,11 +438,10 @@ function AppContent() {
 
           Alert.alert(
             "Login Failed",
-            // "Auto login falied. Please try again."
             "Something went wrong. Please try again or check your internet connection."
           );
         }
-      }, 25000);
+      }, 55000);
 
 
     } catch (e: any) {
@@ -508,6 +507,9 @@ function AppContent() {
       wasLoggedInRef.current = false;
       setShowWeb(false);
       setLoading(false);
+      setMobileNo('');
+      setPassword('');
+
     }
   };
 
