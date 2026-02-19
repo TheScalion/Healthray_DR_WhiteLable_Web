@@ -53,7 +53,7 @@ const BASE_URL = 'https://heritagenode.healthray.com/api/v2/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
-const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
+const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.heritage.doctor&hl=en_IN';
 
 
 export default function App() {
@@ -442,7 +442,7 @@ function AppContent() {
             "Something went wrong. Please try again or check your internet connection."
           );
         }
-      }, 25000);
+      }, 55000);
 
 
     } catch (e: any) {
@@ -508,6 +508,8 @@ function AppContent() {
       wasLoggedInRef.current = false;
       setShowWeb(false);
       setLoading(false);
+      setMobileNo('');
+      setPassword('');
     }
   };
 
