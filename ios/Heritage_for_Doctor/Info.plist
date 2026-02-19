@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -57,11 +59,26 @@
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+  <key>NSCameraUsageDescription</key>
+    <string>We are using a camera to allow for capturing the images to complete the profile info, to add the walk-in patient, to complete clinic profile, or capture and attach the digital signature for prescriptions, or send the images to the patients while they are doing chat with the patients for them booked online consultation.</string>
+    <key>NSLocationAlwaysUsageDescription</key>
+    <string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+      <string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+      <key>NSLocationWhenInUseUsageDescription</key>
+      <string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+      <key>NSMicrophoneUsageDescription</key>
+      <string>We are using microphone permission to allow for recording audio and send that audio file to the patients in chat for booked online consultation.</string>
+      <key>NSPhotoLibraryAddUsageDescription</key>
+        <string>We are using a photo library permission to save the captured photos if it&apos;s taken a while to complete the profile info, clinic info, attach the medical attachments(images), add or attach the digital signature for prescriptions, add walk-in patient and during the chat with patient for booked online consultation.</string>
+        <key>NSPhotoLibraryUsageDescription</key>
+        <string>We are using a photo library permission to allow for accessing the images to complete the profile info, clinic info, add walk-in patient info, attach the medical attachments(images), add or attach the digital signature for prescriptions, and during the chat with patient for booked online consultation.</string>
+        <key>NSUserTrackingUsageDescription</key>
+        <string>Healthray app will use your data to track your interactions and preferences to provide personalized medical recommendations and improve the accuracy of prescription suggestions. For example, we may use your health data to recommend the most effective treatment options.</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-  <key>ITSAppUsesNonExemptEncryption</key>
-  <false/>
 </dict>
 </plist>

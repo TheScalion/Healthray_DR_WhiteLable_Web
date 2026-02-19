@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   StatusBar,
   useColorScheme,
@@ -16,6 +15,7 @@ import {
   Platform,
   Dimensions,
   ScrollView,
+  Keyboard
 } from "react-native";
 import { WebView, type WebView as WebViewType } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -28,6 +28,12 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
+import Share from 'react-native-share';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+import LottieView from 'lottie-react-native';
+
+
+
 
 const LOGIN_URL = "https://heritage.healthray.com/login";
 
@@ -335,6 +341,7 @@ function AppContent() {
   // };
 
   const handleLogin = async () => {
+
     if (!mobileNo || !password) {
       Alert.alert("Error", "Enter mobile number & password");
       return;
@@ -349,7 +356,7 @@ function AppContent() {
     }
 
     setLoading(true);
-
+    Keyboard.dismiss()
     try {
 
       // Encrypt password
@@ -470,6 +477,8 @@ function AppContent() {
     const url = navState.url.toLowerCase();
     lastWebUrlRef.current = url;
 
+    console.log('Updated URL.....', url)
+
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
     if (!url.includes("/login")) {
@@ -518,53 +527,77 @@ function AppContent() {
 
 
   const autoFillScript = `
-      (function autoLogin() {
-      try {
-        const url = window.location.href;
-        console.log('✅ Page loaded:', url);
- 
-        if (!url.includes('/login')) {
-          return;
-        }
- 
-        const mobileInput = document.getElementById('mobile_no');
-        const passwordInput =
-          document.querySelector('#mat-input-1') ||
-          document.querySelector('input[type="password"]');
- 
-        const loginButton = document.querySelector('button.submit-button');
- 
-        const doctorButton = document.getElementById('mat-button-toggle-1-button');
-        const staffButton = document.getElementById('mat-button-toggle-2-button');
- 
-        const verificationType = '${userType}';
- 
-        if (verificationType.toLowerCase() === 'invitee') {
-          if (staffButton) staffButton.click();
-        } else {
-          if (doctorButton) doctorButton.click();
-        }
- 
-        if (mobileInput && passwordInput && loginButton) {
-          mobileInput.value = '${mobileNo}';
-          mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
- 
-          passwordInput.value = '${password}';
-          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
- 
-          setTimeout(() => {
-            loginButton.click();
-            console.log('✅ Auto login triggered');
-          }, 2500);
-        } else {
-          setTimeout(autoLogin, 1000);
-        }
-      } catch (e) {
-        console.log('❌ Auto login error:', e);
+  (function autoLogin() {
+
+    let attemptCount = 0;
+    const maxAttempts = 3;
+    const retryDelay = 5000; // EXACT 3 seconds between clicks
+    const clickDelay = 2000;
+
+    function performClick() {
+
+      if (attemptCount >= maxAttempts) {
+        console.log('🛑 Max login attempts reached');
+        return;
       }
-    })();
-    true;
-  `;
+
+      const url = window.location.href;
+      if (!url.includes('/login')) return;
+
+      const mobileInput = document.getElementById('mobile_no');
+      const passwordInput =
+        document.querySelector('#mat-input-1') ||
+        document.querySelector('input[type="password"]');
+
+      const loginButton = document.querySelector('button.submit-button');
+
+      const doctorButton = document.getElementById('mat-button-toggle-1-button');
+      const staffButton = document.getElementById('mat-button-toggle-2-button');
+
+      const verificationType = '${userType}';
+
+      if (verificationType.toLowerCase() === 'invitee') {
+        if (staffButton) staffButton.click();
+      } else {
+        if (doctorButton) doctorButton.click();
+      }
+
+      if (mobileInput && passwordInput && loginButton && !loginButton.disabled) {
+
+      // Fill inputs
+      mobileInput.value = '${mobileNo}';
+      mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      passwordInput.value = '${password}';
+      passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      console.log('⏳ Waiting 2 seconds before click...');
+
+      // 👇 WAIT 2 SECONDS BEFORE CLICK
+      setTimeout(() => {
+
+        loginButton.click();
+        attemptCount++;
+
+        console.log('✅ Login attempt:', attemptCount);
+
+        if (attemptCount < maxAttempts) {
+          setTimeout(performClick, retryDelay);
+        }
+
+      }, clickDelay);
+
+    }
+  }
+
+  // Start after page loads (2 sec initial delay)
+  setTimeout(performClick, 2000);
+
+})();
+true;
+`;
+
+
 
   /* ================= WEB VIEW ================= */
 
@@ -591,6 +624,106 @@ function AppContent() {
 
 
 
+  const handleMessage = async (event: any) => {
+    try {
+      const message = JSON.parse(event.nativeEvent.data);
+
+      if (message?.type !== 'pdf') return;
+      if (!message?.data) return;
+
+      const base64Data = message.data.replace(
+        'data:application/pdf;base64,',
+        ''
+      );
+
+      if (Platform.OS === 'android') {
+
+        // 📂 Folder path
+        const folderPath =
+          ReactNativeBlobUtil.fs.dirs.DownloadDir +
+          '/HealthrayDR/HealthrayDocument';
+
+        const filePath = folderPath + '/Prescription.pdf';
+
+        // 📁 Create folder (ignore if exists)
+        await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
+
+        // 📄 Overwrite file (no delete needed)
+        await ReactNativeBlobUtil.fs.writeFile(
+          filePath,
+          base64Data,
+          'base64'
+        );
+
+        console.log('PDF saved at:', filePath);
+
+        // 📖 Open PDF
+        await ReactNativeBlobUtil.android.actionViewIntent(
+          filePath,
+          'application/pdf'
+        );
+
+      } else {
+
+        const folderPath =
+          ReactNativeBlobUtil.fs.dirs.DocumentDir +
+          '/HealthrayDR/HealthrayDocument';
+
+        const filePath = folderPath + '/Prescription.pdf';
+
+        await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
+
+        await ReactNativeBlobUtil.fs.writeFile(
+          filePath,
+          base64Data,
+          'base64'
+        );
+
+        await Share.open({
+          url: 'file://' + filePath,
+          type: 'application/pdf',
+          failOnCancel: false,
+        });
+      }
+
+    } catch (error) {
+      console.log('PDF Error:', error);
+    }
+  };
+
+  const combinedScript = `
+${disableZoomScript}
+
+(function() {
+  document.addEventListener('click', function(e) {
+    const element = e.target.closest('a');
+
+    if (element && element.href && element.href.startsWith('blob:')) {
+
+      fetch(element.href)
+        .then(res => res.blob())
+        .then(blob => {
+          const reader = new FileReader();
+          reader.onloadend = function() {
+            window.ReactNativeWebView.postMessage(
+              JSON.stringify({
+                type: 'pdf',
+                data: reader.result
+              })
+            );
+          };
+          reader.readAsDataURL(blob);
+        });
+
+      e.preventDefault();
+    }
+  });
+})();
+true;
+`;
+
+
+
   if (showWeb) {
     return (
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
@@ -603,7 +736,8 @@ function AppContent() {
           domStorageEnabled
           mixedContentMode="always"
 
-          injectedJavaScript={disableZoomScript}
+          // injectedJavaScript={disableZoomScript}
+          injectedJavaScript={combinedScript}
           scalesPageToFit={false}        // Android
           setBuiltInZoomControls={false} // Android
           setDisplayZoomControls={false}
@@ -612,19 +746,28 @@ function AppContent() {
 
           // incognito                   // extra safety
           // cacheEnabled={false}         // Android safety
-
+          onMessage={handleMessage}
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
         />
 
 
         {loading && (
+          // <View style={styles.overlay}>
+          //   <ActivityIndicator size="large" color="#576bff" />
+          // </View>
           <View style={styles.overlay}>
-            <ActivityIndicator size="large" color="#576bff" />
+            <LottieView
+              source={require('./src/common/Loader.json')}
+              autoPlay
+              loop
+              style={styles.lottie}
+            />
           </View>
+
         )}
 
-        <Modal visible={showInternetModel} transparent animationType="fade">
+        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalBox}>
               <Text style={styles.modalTitle}>No Internet</Text>
@@ -774,7 +917,7 @@ function AppContent() {
         </View>
       )} */}
 
-      <Modal visible={showInternetModel} transparent animationType="fade">
+      <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>No Internet</Text>
@@ -792,52 +935,63 @@ function AppContent() {
 
   /* ================= LOGIN UI ================= */
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#fff' }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-    >
-      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        {IS_TABLET ? (
-          <>
-            <View style={styles.header}>
-              <Text style={styles.headerTitle}>Login Here</Text>
-            </View>
-
-
-            <View style={{ flex: 1, flexDirection: 'row' }}>
-
-              <View style={styles.tabletLeft}>
-                <Image
-                  source={require('./src/common/BannerLogo.png')}
-                  style={styles.tabletImage}
-                  resizeMode="contain"
-                />
+    <>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: '#fff' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+      >
+        <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+          {IS_TABLET ? (
+            <>
+              <View style={styles.header}>
+                <Text style={styles.headerTitle}>Login Here</Text>
               </View>
 
-              {/* RIGHT LOGIN */}
-              <View style={styles.tabletRight}>
-                {renderMobileUI()}
+
+              <View style={{ flex: 1, flexDirection: 'row' }}>
+
+                <View style={styles.tabletLeft}>
+                  <Image
+                    source={require('./src/common/BannerLogo.png')}
+                    style={styles.tabletImage}
+                    resizeMode="contain"
+                  />
+                </View>
+
+                {/* RIGHT LOGIN */}
+                <View style={styles.tabletRight}>
+                  {renderMobileUI()}
+                </View>
+
               </View>
+            </>
+            // renderMobileUI()
 
-            </View>
-          </>
-          // renderMobileUI()
+          ) : (
+            /* MOBILE LAYOUT */
+            renderMobileUI()
+          )}
 
-        ) : (
-          /* MOBILE LAYOUT */
-          renderMobileUI()
-        )}
 
-        {/* FULL SCREEN LOADER */}
-        {loading && (
-          <View style={styles.overlay}>
-            <ActivityIndicator size="large" color="#576bff" />
-          </View>
-        )}
+        </SafeAreaView>
+      </KeyboardAvoidingView>
 
-      </SafeAreaView>
-    </KeyboardAvoidingView>
+      {/* FULL SCREEN LOADER */}
+      {loading && (
+        // <View style={styles.overlay}>
+        //   <ActivityIndicator size="large" color="#576bff" />
+        // </View>
+        <View style={styles.overlay}>
+          <LottieView
+            source={require('./src/common/Loader.json')}
+            autoPlay
+            loop
+            style={styles.lottie}
+          />
+        </View>
+      )}
+    </>
   );
 }
 
@@ -866,7 +1020,7 @@ const styles = StyleSheet.create({
   overlay: {
     position: "absolute",
     inset: 0,
-    backgroundColor: "rgba(255,255,255,0.6)",
+    backgroundColor: "rgb(38,42,50)",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -908,7 +1062,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_TABLET ? width * 0.05 : width * 0.08,
   },
   logo: {
-    width: width * 0.5,
+    width: IS_TABLET ? width * 0.2 : width * 0.5,
     height: 120,
     marginTop: 30,
   },
@@ -989,6 +1143,10 @@ const styles = StyleSheet.create({
   tabletRight: {
     width: '35%',
     justifyContent: 'center',
+  },
+  lottie: {
+    width: 150,
+    height: 150,
   },
 });
 

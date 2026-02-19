@@ -33,12 +33,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
   }
 }
 // 🔒 LOCK ORIENTATION HERE
- func application(
-   _ application: UIApplication,
-   supportedInterfaceOrientationsFor window: UIWindow?
- ) -> UIInterfaceOrientationMask {
-   return .landscapeRight
- }
+func application(
+    _ application: UIApplication,
+    supportedInterfaceOrientationsFor window: UIWindow?
+  ) -> UIInterfaceOrientationMask {
+
+    if UIDevice.current.userInterfaceIdiom == .pad {
+      return [.landscapeLeft, .landscapeRight]
+    } else {
+      return .portrait
+    }
+  }
 
 class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
   override func sourceURL(for bridge: RCTBridge) -> URL? {
