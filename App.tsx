@@ -15,7 +15,8 @@ import {
   Platform,
   Dimensions,
   ScrollView,
-  Keyboard
+  Keyboard,
+  PermissionsAndroid
 } from "react-native";
 import { WebView, type WebView as WebViewType } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -55,7 +56,6 @@ const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
 const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
 
-
 export default function App() {
   const mode = useColorScheme();
   return (
@@ -67,6 +67,8 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+
 
 function AppContent() {
   const webRef = useRef<WebViewType>(null);
@@ -81,8 +83,8 @@ function AppContent() {
   const [showWeb, setShowWeb] = useState(false);
   const [webKey, setWebKey] = useState(0);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("");
-  const [password, setPassword] = useState("");
+  const [mobileNo, setMobileNo] = useState("7777712345");
+  const [password, setPassword] = useState("123456789");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -110,6 +112,19 @@ function AppContent() {
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
     // buildVersionManagement();
+  }, []);
+
+  useEffect(() => {
+    const requestPermissions = async () => {
+      if (Platform.OS === 'android') {
+        await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.CAMERA,
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        ]);
+      }
+    };
+
+    requestPermissions();
   }, []);
 
 
@@ -630,6 +645,8 @@ true;
     try {
       const message = JSON.parse(event.nativeEvent.data);
 
+      console.log('PDF Fetch Data ==>>', message)
+
       if (message?.type !== 'pdf') return;
       if (!message?.data) return;
 
@@ -738,7 +755,6 @@ true;
           domStorageEnabled
           mixedContentMode="always"
 
-          // injectedJavaScript={disableZoomScript}
           injectedJavaScript={combinedScript}
           scalesPageToFit={false}        // Android
           setBuiltInZoomControls={false} // Android
@@ -746,8 +762,19 @@ true;
           bounces={false}
           scrollEnabled={true}
 
-          // incognito                   // extra safety
-          // cacheEnabled={false}         // Android safety
+
+          /* ===== VIDEO FIX ===== */
+
+          setSupportMultipleWindows={false}
+          allowsInlineMediaPlayback={true}
+          mediaPlaybackRequiresUserAction={false}
+          allowsFullscreenVideo={true}
+
+          // 🔥 CRITICAL FOR ANDROID VIDEO
+          androidLayerType="hardware"
+
+          /* ====================== */
+
           onMessage={handleMessage}
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
