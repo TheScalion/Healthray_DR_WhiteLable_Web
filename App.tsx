@@ -109,7 +109,7 @@ function AppContent() {
 
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
-    // buildVersionManagement();
+    buildVersionManagement();
   }, []);
 
 
@@ -231,6 +231,7 @@ function AppContent() {
         platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
         current_version: DeviceInfo.getVersion(),
         user_type: 'D',
+        application: 'heritage'
       };
 
       console.log('📡 Calling API with params:', params);
