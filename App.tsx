@@ -33,8 +33,6 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
 
 
-
-
 const LOGIN_URL = "https://heritage.healthray.com/login";
 
 const STORAGE_KEYS = {
@@ -50,6 +48,7 @@ const IS_TABLET = width >= 768;
 
 
 const BASE_URL = 'https://heritagenode.healthray.com/api/v2/';
+const BASE_URL1 = 'https://heritagenode.healthray.com/api/v1/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
@@ -231,13 +230,13 @@ function AppContent() {
         platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
         current_version: DeviceInfo.getVersion(),
         user_type: 'D',
-        application: 'heritage'
+        // application: 'heritage'
       };
 
       console.log('📡 Calling API with params:', params);
 
       const response = await axios.post(
-        `${BASE_URL}${BUILD_MANAGMENT_API}`,
+        `${BASE_URL1}${BUILD_MANAGMENT_API}`,
         params,
         {
           headers: {
