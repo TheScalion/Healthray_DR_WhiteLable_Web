@@ -710,37 +710,113 @@ true;
     }
   };
 
+
+  // working code ..... 
+
+  //   const combinedScript = `
+  // ${disableZoomScript}
+
+  // (function() {
+
+  //   function sendBlob(blob) {
+  //     const reader = new FileReader();
+  //     reader.onloadend = function() {
+  //       window.ReactNativeWebView.postMessage(
+  //         JSON.stringify({
+  //           type: 'pdf',
+  //           data: reader.result
+  //         })
+  //       );
+  //     };
+  //     reader.readAsDataURL(blob);
+  //   }
+
+  //   // ✅ Intercept window.open (Angular sometimes uses this)
+  //   const originalOpen = window.open;
+  //   window.open = function(url) {
+  //     if (url && url.startsWith('blob:')) {
+  //       fetch(url)
+  //         .then(res => res.blob())
+  //         .then(blob => sendBlob(blob));
+  //       return null;
+  //     }
+  //     return originalOpen.apply(this, arguments);
+  //   };
+
+  //   // ✅ Intercept anchor click
+  //   document.addEventListener('click', function(e) {
+  //     const element = e.target.closest('a');
+  //     if (element && element.href && element.href.startsWith('blob:')) {
+  //       fetch(element.href)
+  //         .then(res => res.blob())
+  //         .then(blob => sendBlob(blob));
+  //       e.preventDefault();
+  //     }
+  //   });
+
+  //   // ✅ Intercept createObjectURL
+  //   const originalCreateObjectURL = URL.createObjectURL;
+  //   URL.createObjectURL = function(blob) {
+  //     sendBlob(blob);
+  //     return originalCreateObjectURL.apply(this, arguments);
+  //   };
+
+  // })();
+  // true;
+  // `;
+
+
   const combinedScript = `
 ${disableZoomScript}
 
 (function() {
+
+  function sendBlob(blob) {
+    const reader = new FileReader();
+    reader.onloadend = function() {
+      window.ReactNativeWebView.postMessage(
+        JSON.stringify({
+          type: 'pdf',
+          data: reader.result
+        })
+      );
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  // ✅ Intercept window.open (Angular sometimes uses this)
+  const originalOpen = window.open;
+  window.open = function(url) {
+    if (url && url.startsWith('blob:')) {
+      fetch(url)
+        .then(res => res.blob())
+        .then(blob => sendBlob(blob));
+      return null;
+    }
+    return originalOpen.apply(this, arguments);
+  };
+
+  // ✅ Intercept anchor click
   document.addEventListener('click', function(e) {
     const element = e.target.closest('a');
-
     if (element && element.href && element.href.startsWith('blob:')) {
-
       fetch(element.href)
         .then(res => res.blob())
-        .then(blob => {
-          const reader = new FileReader();
-          reader.onloadend = function() {
-            window.ReactNativeWebView.postMessage(
-              JSON.stringify({
-                type: 'pdf',
-                data: reader.result
-              })
-            );
-          };
-          reader.readAsDataURL(blob);
-        });
-
+        .then(blob => sendBlob(blob));
       e.preventDefault();
     }
   });
+
+  // ✅ Intercept createObjectURL
+  const originalCreateObjectURL = URL.createObjectURL;
+  URL.createObjectURL = function(blob) {
+    sendBlob(blob);
+    return originalCreateObjectURL.apply(this, arguments);
+  };
+
 })();
 true;
 `;
-
 
 
   if (showWeb) {
