@@ -83,8 +83,8 @@ function AppContent() {
   const [showWeb, setShowWeb] = useState(false);
   const [webKey, setWebKey] = useState(0);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("7777712345");
-  const [password, setPassword] = useState("123456789");
+  const [mobileNo, setMobileNo] = useState("");
+  const [password, setPassword] = useState("");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
