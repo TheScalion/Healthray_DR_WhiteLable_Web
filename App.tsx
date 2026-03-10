@@ -767,92 +767,92 @@ true;
 
 
   // OLD code Support OPD
-  const combinedScript = `
-${disableZoomScript}
+  // const combinedScript = `
+  // ${disableZoomScript}
 
-(function() {
-  document.addEventListener('click', function(e) {
-    const element = e.target.closest('a');
+  // (function() {
+  //   document.addEventListener('click', function(e) {
+  //     const element = e.target.closest('a');
 
-    if (element && element.href && element.href.startsWith('blob:')) {
+  //     if (element && element.href && element.href.startsWith('blob:')) {
 
-      fetch(element.href)
-        .then(res => res.blob())
-        .then(blob => {
-          const reader = new FileReader();
-          reader.onloadend = function() {
-            window.ReactNativeWebView.postMessage(
-              JSON.stringify({
-                type: 'pdf',
-                data: reader.result
-              })
-            );
-          };
-          reader.readAsDataURL(blob);
-        });
+  //       fetch(element.href)
+  //         .then(res => res.blob())
+  //         .then(blob => {
+  //           const reader = new FileReader();
+  //           reader.onloadend = function() {
+  //             window.ReactNativeWebView.postMessage(
+  //               JSON.stringify({
+  //                 type: 'pdf',
+  //                 data: reader.result
+  //               })
+  //             );
+  //           };
+  //           reader.readAsDataURL(blob);
+  //         });
 
-      e.preventDefault();
-    }
-  });
-})();
-true;
-`;
+  //       e.preventDefault();
+  //     }
+  //   });
+  // })();
+  // true;
+  // `;
 
 
 
   // NEW Code for OPD and Dischage Menu 
-  
-  //   const combinedScript = `
-  // ${disableZoomScript}
 
-  // (function() {
+  const combinedScript = `
+  ${disableZoomScript}
 
-  //   function sendBlob(blob) {
-  //     const reader = new FileReader();
-  //     reader.onloadend = function() {
-  //       window.ReactNativeWebView.postMessage(
-  //         JSON.stringify({
-  //           type: 'pdf',
-  //           data: reader.result
-  //         })
-  //       );
-  //     };
-  //     reader.readAsDataURL(blob);
-  //   }
+  (function() {
 
-  //   // ✅ Intercept window.open (Angular sometimes uses this)
-  //   const originalOpen = window.open;
-  //   window.open = function(url) {
-  //     if (url && url.startsWith('blob:')) {
-  //       fetch(url)
-  //         .then(res => res.blob())
-  //         .then(blob => sendBlob(blob));
-  //       return null;
-  //     }
-  //     return originalOpen.apply(this, arguments);
-  //   };
+    function sendBlob(blob) {
+      const reader = new FileReader();
+      reader.onloadend = function() {
+        window.ReactNativeWebView.postMessage(
+          JSON.stringify({
+            type: 'pdf',
+            data: reader.result
+          })
+        );
+      };
+      reader.readAsDataURL(blob);
+    }
 
-  //   // ✅ Intercept anchor click
-  //   document.addEventListener('click', function(e) {
-  //     const element = e.target.closest('a');
-  //     if (element && element.href && element.href.startsWith('blob:')) {
-  //       fetch(element.href)
-  //         .then(res => res.blob())
-  //         .then(blob => sendBlob(blob));
-  //       e.preventDefault();
-  //     }
-  //   });
+    // ✅ Intercept window.open (Angular sometimes uses this)
+    const originalOpen = window.open;
+    window.open = function(url) {
+      if (url && url.startsWith('blob:')) {
+        fetch(url)
+          .then(res => res.blob())
+          .then(blob => sendBlob(blob));
+        return null;
+      }
+      return originalOpen.apply(this, arguments);
+    };
 
-  //   // ✅ Intercept createObjectURL
-  //   const originalCreateObjectURL = URL.createObjectURL;
-  //   URL.createObjectURL = function(blob) {
-  //     sendBlob(blob);
-  //     return originalCreateObjectURL.apply(this, arguments);
-  //   };
+    // ✅ Intercept anchor click
+    document.addEventListener('click', function(e) {
+      const element = e.target.closest('a');
+      if (element && element.href && element.href.startsWith('blob:')) {
+        fetch(element.href)
+          .then(res => res.blob())
+          .then(blob => sendBlob(blob));
+        e.preventDefault();
+      }
+    });
 
-  // })();
-  // true;
-  // `;
+    // ✅ Intercept createObjectURL
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = function(blob) {
+      sendBlob(blob);
+      return originalCreateObjectURL.apply(this, arguments);
+    };
+
+  })();
+  true;
+  `;
 
 
   if (showWeb) {
@@ -874,18 +874,18 @@ true;
           bounces={false}
           scrollEnabled={true}
 
+          // Currently block video call , via manage website 
+          // /* ===== VIDEO FIX ===== */
 
-          /* ===== VIDEO FIX ===== */
+          // setSupportMultipleWindows={false}
+          // allowsInlineMediaPlayback={true}
+          // mediaPlaybackRequiresUserAction={false}
+          // allowsFullscreenVideo={true}
 
-          setSupportMultipleWindows={false}
-          allowsInlineMediaPlayback={true}
-          mediaPlaybackRequiresUserAction={false}
-          allowsFullscreenVideo={true}
+          // // 🔥 CRITICAL FOR ANDROID VIDEO
+          // androidLayerType="hardware"
 
-          // 🔥 CRITICAL FOR ANDROID VIDEO
-          androidLayerType="hardware"
-
-          /* ====================== */
+          // /* ====================== */
 
           onMessage={handleMessage}
           onLoadEnd={handleLoadEnd}
