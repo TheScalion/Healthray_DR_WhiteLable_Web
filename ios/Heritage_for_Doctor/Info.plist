@@ -36,7 +36,7 @@
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+	<string>HealthRay uses your location to record work-hour location for HRMS attendance, add new patients, and complete doctor/clinic profile info.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UIAppFonts</key>
@@ -65,9 +65,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>We are using a camera to allow for capturing the images to complete the profile info, to add the walk-in patient, to complete clinic profile, or capture and attach the digital signature for prescriptions, or send the images to the patients while they are doing chat with the patients for them booked online consultation.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+	<string>HealthRay needs always-on location access so it can record your work location for HRMS attendance even when the app is in the background.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>We are using location permission to access the current location within the app to add new patient, and while doctor will complete the profile info as well as clinic info.</string>
+	<string>HealthRay needs always-on location access so it can record your work location for HRMS attendance even when the app is in the background.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>HealthRay uses motion data to detect movement and reduce battery use while location tracking is active.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>We are using microphone permission to allow for recording audio and send that audio file to the patients in chat for booked online consultation.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
@@ -76,5 +78,9 @@
 	<string>We are using a photo library permission to allow for accessing the images to complete the profile info, clinic info, add walk-in patient info, attach the medical attachments(images), add or attach the digital signature for prescriptions, and during the chat with patient for booked online consultation.</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 </dict>
 </plist>

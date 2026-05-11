@@ -1,10 +1,33 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Required Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Location permissions -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground service permissions (required for Android 9+ / 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Battery optimisation exemption (Doze / App Standby) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Wake lock — required by background-geolocation foreground service -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Notifications (Android 13+) — required for the foreground service notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Boot receiver — restart WorkManager health check and resume session after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
       android:name=".MainApplication"
@@ -13,14 +36,14 @@
       android:roundIcon="@mipmap/ic_launcher_round"
       android:allowBackup="false"
       android:theme="@style/AppTheme"
-      android:hardwareAccelerated="true"   
+      android:hardwareAccelerated="true"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
 
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
-        android:hardwareAccelerated="true"   
+        android:hardwareAccelerated="true"
         android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
         android:launchMode="singleTask"
         android:windowSoftInputMode="adjustResize"
@@ -32,5 +55,33 @@
         </intent-filter>
 
       </activity>
+
+      <!-- Existing react-native-geolocation-service foreground service (kept for
+           one-shot navigator.geolocation bridge calls). -->
+      <service
+        android:name="com.agontuk.RNFusedLocation.LocationUpdatesService"
+        android:foregroundServiceType="location"
+        android:stopWithTask="false" />
+
+      <!-- HRMS foreground service — posts the persistent tracking notification -->
+      <service
+        android:name=".HrmsLocationService"
+        android:foregroundServiceType="location"
+        android:stopWithTask="false"
+        android:exported="false" />
+
+      <!-- react-native-geolocation-service handles background GPS via its own
+           foregroundService option in watchPosition — no extra service declaration needed. -->
+
+      <!-- Restarts WorkManager health check and resumes tracking session after device reboot -->
+      <receiver
+          android:name=".BootCompletedReceiver"
+          android:exported="true">
+        <intent-filter>
+          <action android:name="android.intent.action.BOOT_COMPLETED" />
+          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        </intent-filter>
+      </receiver>
+
     </application>
 </manifest>

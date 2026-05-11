@@ -83,8 +83,8 @@ android {
         applicationId "com.healthray.doctor"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 139
-        versionName "3.9"
+        versionCode 140
+        versionName "4.0"
     }
     signingConfigs {
         debug {
@@ -119,6 +119,13 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    // WorkManager — periodic health check that restarts GPS if killed by OEM battery manager
+    implementation "androidx.work:work-runtime-ktx:2.9.0"
+
+    // Fused Location — declared explicitly so HrmsLocationService can import it directly.
+    // react-native-geolocation-service uses implementation (not api) so it doesn't leak to us.
+    implementation "com.google.android.gms:play-services-location:18.0.0"
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

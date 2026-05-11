@@ -21,6 +21,7 @@
     "react-native-blob-util": "^0.24.7",
     "react-native-bootsplash": "^7.0.1",
     "react-native-device-info": "^15.0.1",
+    "react-native-geolocation-service": "^5.3.1",
     "react-native-get-random-values": "^2.0.0",
     "react-native-safe-area-context": "^5.5.2",
     "react-native-share": "^12.2.5",
