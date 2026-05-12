@@ -33,7 +33,7 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
 
 
-const LOGIN_URL = "https://heritage.healthray.com/login";
+const LOGIN_URL = "https://ray.heritageimshospital.com/login";
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -452,9 +452,9 @@ function AppContent() {
       );
       setLoading(false);
     }
-    // finally {
-    //   setLoading(false);
-    // }
+    finally {
+      setLoading(false);
+    }
   };
 
 
@@ -476,6 +476,8 @@ function AppContent() {
   const handleNavigationStateChange = async (navState: any) => {
     const url = navState.url.toLowerCase();
     lastWebUrlRef.current = url;
+    console.log("WEB URL---------------------->:", navState.url);
+
 
     console.log('Updated URL.....', url)
 
