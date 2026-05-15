@@ -40,7 +40,23 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
 import Geolocation from 'react-native-geolocation-service';
 
-const LOGIN_URL = "https://ray.healthray.com/login";
+// ─── Environment ─────────────────────────────────────────────────────────────
+// Set IS_STAGING = true  → staging  (devfront.healthray.com / node-stage)
+// Set IS_STAGING = false → production (ray.healthray.com / node)
+// Flip this one flag before building; all URLs below update automatically.
+const IS_STAGING = true;
+
+const API_BASE = IS_STAGING
+  ? 'https://192.168.1.83:4012'
+  : 'https://node.healthray.com';
+
+const WEB_BASE = IS_STAGING
+  ? 'https://devfront.healthray.com'
+  : 'https://ray.healthray.com';
+
+const LOGIN_URL = `${WEB_BASE}/login`;
+const SIGN_IN_URL = `${API_BASE}/api/v2/users/sign_in`;
+// ─────────────────────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -51,7 +67,7 @@ const STORAGE_KEYS = {
 // ─── HRMS tracking constants ─────────────────────────────────────────────────
 // Native owns auth + base URL, so the WebView never sends them in the
 // START_TRACKING / STOP_TRACKING bridge payload.
-const TRACKING_API_BASE = 'https://node.healthray.com';
+const TRACKING_API_BASE = API_BASE;
 const TRACKING_PATH_START = '/api/v1/hrms/attendance/tracking/start';
 const TRACKING_PATH_BATCH = '/api/v1/hrms/attendance/tracking/batch';
 const TRACKING_PATH_END = '/api/v1/hrms/attendance/tracking/end';
@@ -276,7 +292,7 @@ class HRMSLocationTracker {
     try {
       this.statusEmitter?.(status, detail);
     } catch (e) {
-      console.warn('[HRMS] status emit error', e);
+      console.log('[HRMS] status emit error', e);
     }
   }
 
@@ -336,7 +352,7 @@ class HRMSLocationTracker {
       }
       return true;
     } catch (e) {
-      console.warn('[HRMS] requestPermission error', e);
+      console.log('[HRMS] requestPermission error', e);
       return false;
     }
   }
@@ -374,7 +390,7 @@ class HRMSLocationTracker {
       }
       if (updates.length) await AsyncStorage.multiSet(updates);
     } catch (e) {
-      console.warn('[HRMS] persistRolledTokens error', e);
+      console.log('[HRMS] persistRolledTokens error', e);
     }
   }
 
@@ -411,7 +427,7 @@ class HRMSLocationTracker {
       // dying, something is fundamentally broken. Stop hard.
       const sinceLastResume = Date.now() - this.lastAutoResumeAt;
       if (this.lastAutoResumeAt > 0 && sinceLastResume < TRACKING_AUTO_RESUME_TIGHT_LOOP_MS) {
-        console.warn('[HRMS] tight-loop on auto-resume — aborting');
+        console.log('[HRMS] tight-loop on auto-resume — aborting');
         return this.fullSessionTeardown('session_expired');
       }
 
@@ -434,11 +450,11 @@ class HRMSLocationTracker {
         if (wait > 0) await new Promise<void>(r => setTimeout(r, wait));
         newSessionId = await this.startSession(employeeId, organizationId);
         if (newSessionId) break;
-        console.warn(`[HRMS] auto-resume attempt ${i + 1} failed`);
+        console.log(`[HRMS] auto-resume attempt ${i + 1} failed`);
       }
 
       if (!newSessionId) {
-        console.warn('[HRMS] auto-resume exhausted retries — stopping');
+        console.log('[HRMS] auto-resume exhausted retries — stopping');
         return this.fullSessionTeardown('session_expired');
       }
 
@@ -494,14 +510,14 @@ class HRMSLocationTracker {
         JSON.stringify(this.buffer),
       );
     } catch (e) {
-      console.warn('[HRMS] persistBuffer error', e);
+      console.log('[HRMS] persistBuffer error', e);
     }
   }
 
   private appendPoint(p: TrackingPoint): void {
     if (this.buffer.length >= TRACKING_MAX_BUFFER_POINTS) {
       const evicted = this.buffer.splice(0, this.buffer.length - TRACKING_MAX_BUFFER_POINTS + 1);
-      console.warn(`[HRMS] buffer overflow — evicted ${evicted.length} oldest point(s); check server connectivity`);
+      console.log(`[HRMS] buffer overflow — evicted ${evicted.length} oldest point(s); check server connectivity`);
     }
     this.buffer.push(p);
   }
@@ -755,7 +771,7 @@ class HRMSLocationTracker {
         // Dead-band → keep current state
       });
     } catch (e) {
-      console.warn('[HRMS] accelerometer subscription failed', e);
+      console.log('[HRMS] accelerometer subscription failed', e);
     }
   }
 
@@ -809,7 +825,7 @@ class HRMSLocationTracker {
           timestamp: pos.timestamp,
         }),
         (err) => {
-          console.warn('[HRMS] initial GPS fix failed', err.code, err.message);
+          console.log('[HRMS] initial GPS fix failed', err.code, err.message);
           resolve(null);
         },
         {
@@ -829,7 +845,7 @@ class HRMSLocationTracker {
     try {
       const initial = await this.getCurrentPositionOnce();
       if (!initial) {
-        console.warn('[HRMS] /start aborted — could not get initial GPS fix');
+        console.log('[HRMS] /start aborted — could not get initial GPS fix');
         return null;
       }
 
@@ -854,7 +870,7 @@ class HRMSLocationTracker {
       // success here may still be a backend error.
       const body = res?.data ?? {};
       if (body.statusState === 'error' || (typeof body.status === 'number' && body.status >= 400)) {
-        console.warn('[HRMS] /start backend error',
+        console.log('[HRMS] /start backend error',
           'status=', body.status, 'message=', body.message);
         if (body.status === 401) await this.handleAuthExpired();
         return null;
@@ -862,17 +878,17 @@ class HRMSLocationTracker {
 
       const sessionId = body?.data?.session_id;
       if (typeof sessionId !== 'string' || !sessionId) {
-        console.warn('[HRMS] /start returned no session_id — full body:', JSON.stringify(body));
+        console.log('[HRMS] /start returned no session_id — full body:', JSON.stringify(body));
         return null;
       }
       return sessionId;
     } catch (e) {
       if (axios.isAxiosError(e)) {
         if (e.response?.status === 401) await this.handleAuthExpired();
-        console.warn('[HRMS] /start failed', e.response?.status, e.message,
+        console.log('[HRMS] /start failed', e.response?.status, e.message,
           'body:', JSON.stringify(e.response?.data));
       } else {
-        console.warn('[HRMS] /start error', e);
+        console.log('[HRMS] /start error', e);
       }
       return null;
     }
@@ -933,9 +949,9 @@ class HRMSLocationTracker {
       await this.persistRolledTokens(res);
     } catch (e) {
       if (axios.isAxiosError(e)) {
-        console.warn('[HRMS] /end failed', e.response?.status, e.message);
+        console.log('[HRMS] /end failed', e.response?.status, e.message);
       } else {
-        console.warn('[HRMS] /end error', e);
+        console.log('[HRMS] /end error', e);
       }
     }
   }
@@ -991,22 +1007,22 @@ class HRMSLocationTracker {
       } else if (realStatus === 401) {
         await this.handleAuthExpired();
       } else if (realStatus >= 500) {
-        console.warn('[HRMS] /batch 5xx, retaining buffer', realStatus, body.message);
+        console.log('[HRMS] /batch 5xx, retaining buffer', realStatus, body.message);
         debugToast(`❌ /batch ${realStatus} server err — retrying`, true);
       } else if (realStatus === 429) {
-        console.warn('[HRMS] /batch 429 rate-limited, retaining buffer for next cycle');
+        console.log('[HRMS] /batch 429 rate-limited, retaining buffer for next cycle');
         debugToast('❌ /batch 429 rate-limited', true);
       } else {
-        console.warn('[HRMS] /batch 4xx, dropping batch', realStatus, body.message);
+        console.log('[HRMS] /batch 4xx, dropping batch', realStatus, body.message);
         debugToast(`❌ /batch ${realStatus} — dropped`, true);
         this.buffer = this.buffer.slice(sending.length);
         await this.persistBuffer();
       }
     } catch (e) {
       if (axios.isAxiosError(e)) {
-        console.warn('[HRMS] /batch network error', e.message);
+        console.log('[HRMS] /batch network error', e.message);
       } else {
-        console.warn('[HRMS] /batch error', e);
+        console.log('[HRMS] /batch error', e);
       }
     } finally {
       this.flushInFlight = false;
@@ -1103,7 +1119,7 @@ class HRMSLocationTracker {
     this.watchId = Geolocation.watchPosition(
       (pos) => this.handleLocation(pos),
       (err) => {
-        console.warn('[HRMS] GPS error', err.code, err.message);
+        console.log('[HRMS] GPS error', err.code, err.message);
         if (err.code === 1) this.emit('permission_denied', { reason: 'denied_at_runtime' });
         else if (err.code === 2) this.emit('permission_denied', { reason: 'provider_disabled' });
       },
@@ -1123,7 +1139,7 @@ class HRMSLocationTracker {
         (pos) => this.handleLocation(pos),
         (err) => {
           if (err.code !== 3) {
-            console.warn('[HRMS] active-poll GPS error', err.code, err.message);
+            console.log('[HRMS] active-poll GPS error', err.code, err.message);
           }
           if (err.code === 1) this.emit('permission_denied', { reason: 'denied_at_runtime' });
           if (err.code === 2) this.emit('permission_denied', { reason: 'provider_disabled' });
@@ -1180,13 +1196,17 @@ class HRMSLocationTracker {
     // lastHandledAt === 0 means no fix has ever arrived — let the normal
     // startup path handle it; don't restart before the first fix has had time.
     if (this.lastHandledAt === 0 || staleMs <= thresholdMs) return;
-    console.warn(`[HRMS] GPS stale for ${Math.round(staleMs / 1000)} s — restarting`);
+    console.log(`[HRMS] GPS stale for ${Math.round(staleMs / 1000)} s — restarting`);
     this.stopGPS();   // clears watchId, freeing the startGPS guard
     this.startGPS();
     if (!this.flushTimer) this.startFlushTimer();
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
+  async requestPermission(): Promise<boolean> {
+    return this.hasLocationPermission();
+  }
+
   async start(employeeId: number, organizationId: number): Promise<void> {
     if (this.starting) return;
     this.starting = true;
@@ -1211,7 +1231,7 @@ class HRMSLocationTracker {
       const granted = await this.hasLocationPermission();
       if (!granted) {
         this.emit('permission_denied');
-        Linking.openSettings().catch(() => { });
+        openAppSettings();
         return;
       }
 
@@ -1251,7 +1271,7 @@ class HRMSLocationTracker {
       try {
         this.startGPS();
       } catch (e) {
-        console.warn('[HRMS] startGPS failed', e);
+        console.log('[HRMS] startGPS failed', e);
         this.emit('start_failed');
         return;
       }
@@ -1272,8 +1292,8 @@ class HRMSLocationTracker {
               `intent:#Intent;action=android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS;data=package:${pkg};end`,
             );
           } catch (e) {
-            console.warn('[HRMS] battery-opt request failed', e);
-            Linking.openSettings().catch(() => { });
+            console.log('[HRMS] battery-opt request failed', e);
+            openAppSettings();
           }
         }
 
@@ -1283,7 +1303,7 @@ class HRMSLocationTracker {
         const oemAsked = await AsyncStorage.getItem('tracking_oem_battery_asked');
         if (!oemAsked && BatteryOptimization) {
           await AsyncStorage.setItem('tracking_oem_battery_asked', 'true');
-          BatteryOptimization.launchOemSettings().catch(() => {});
+          BatteryOptimization.launchOemSettings().catch(() => { });
         }
       }
 
@@ -1300,7 +1320,7 @@ class HRMSLocationTracker {
 
   async stop(): Promise<void> {
     if (!this.active) {
-      console.warn('[HRMS] STOP_TRACKING received with no active session');
+      console.log('[HRMS] STOP_TRACKING received with no active session');
       return;
     }
     const session = this.active;
@@ -1358,7 +1378,7 @@ class HRMSLocationTracker {
       try {
         this.startGPS();
       } catch (e) {
-        console.warn('[HRMS] resumeIfPossible: startGPS failed — clearing active session', e);
+        console.log('[HRMS] resumeIfPossible: startGPS failed — clearing active session', e);
         this.active = null;
         return;
       }
@@ -1370,7 +1390,7 @@ class HRMSLocationTracker {
         resumed: true,
       });
     } catch (e) {
-      console.warn('[HRMS] resumeIfPossible error', e);
+      console.log('[HRMS] resumeIfPossible error', e);
     }
   }
 
@@ -1380,13 +1400,25 @@ class HRMSLocationTracker {
 }
 
 const hrmsTracker = new HRMSLocationTracker();
+
+// Opens the app's own Settings / Permissions page on both platforms.
+// Linking.openSettings() uses IntentAndroid.openSettings() on Android
+// (ACTION_APPLICATION_DETAILS_SETTINGS + package URI) and 'app-settings:' on iOS.
+async function openAppSettings(): Promise<void> {
+  try {
+    await Linking.openSettings();
+  } catch (e) {
+    console.log('[Bridge] openAppSettings error', e);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
 const IS_TABLET = width >= 768;
 
-const BASE_URL = 'https://node.healthray.com/api/v1/';
+const BASE_URL = `${API_BASE}/api/v1/`;
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
@@ -1419,8 +1451,8 @@ function AppContent() {
 
   const [showWeb, setShowWeb] = useState(false);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("");
-  const [password, setPassword] = useState("");
+  const [mobileNo, setMobileNo] = useState("1234554321");
+  const [password, setPassword] = useState("Ravi@1234");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1529,7 +1561,7 @@ function AppContent() {
       try {
         webRef.current?.injectJavaScript(script);
       } catch (e) {
-        console.warn('[HRMS] failed to dispatch status', status, e);
+        console.log('[HRMS] failed to dispatch status', status, e);
       }
 
       if (status === 'auth_expired') {
@@ -1545,7 +1577,7 @@ function AppContent() {
     });
 
     hrmsTracker.resumeIfPossible().catch((e) =>
-      console.warn('[HRMS] resume failed', e),
+      console.log('[HRMS] resume failed', e),
     );
 
     return () => {
@@ -1680,6 +1712,44 @@ function AppContent() {
 
     setLoading(true);
     Keyboard.dismiss();
+
+    // Staff login always skips the native sign_in API (doctor-only endpoint).
+    // Staging also skips it because the staging /api/v2/users/sign_in returns 500.
+    // In both cases the WebView auto-fill script handles authentication.
+    if (userType === 'Invitee' || IS_STAGING) {
+      try {
+        console.log(`===== [${userType}] Skipping native sign_in (${IS_STAGING ? 'staging env' : 'staff user'}) — WebView auto-fill will handle login`);
+        await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, 'true');
+        isFirstWebLoadRef.current = true;
+        setInitialWebUrl(LOGIN_URL);
+        setShowWeb(true);
+
+        if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+
+        loginTimeoutRef.current = setTimeout(async () => {
+          const currentUrl = lastWebUrlRef.current;
+          if (!currentUrl || currentUrl.includes("/login")) {
+            await AsyncStorage.multiRemove([
+              STORAGE_KEYS.IS_LOGGED_IN,
+              STORAGE_KEYS.SAVE_WEB_URL,
+            ]);
+            wasLoggedInRef.current = false;
+            setShowWeb(false);
+            setLoading(false);
+            Alert.alert(
+              "Login Failed",
+              "Something went wrong. Please try again or check your internet connection."
+            );
+          }
+        }, 55000);
+      } catch (e: any) {
+        Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Doctor login: use native sign_in API to obtain HRMS tracking tokens.
     try {
       const passwordPayload = JSON.stringify({
         text: password,
@@ -1695,8 +1765,11 @@ function AppContent() {
         },
       };
 
+      console.log('===== [Doctor Login] URL:', SIGN_IN_URL);
+      console.log('===== [Doctor Login] payload:', JSON.stringify(payload, null, 2));
+
       const res = await fetch(
-        "https://node.healthray.com/api/v2/users/sign_in",
+        SIGN_IN_URL,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1705,8 +1778,10 @@ function AppContent() {
       );
 
       const data = await res.json();
+      console.log('===== [Doctor Login] status:', res.status, '| response:', JSON.stringify(data, null, 2));
 
       if (!res.ok || data?.statusState !== "success") {
+        console.log('===== [Doctor Login] FAILED — statusState:', data?.statusState, '| message:', data?.message);
         Alert.alert("Login Failed", data?.message || "Unable to sign in");
         setLoading(false);
         return;
@@ -1731,6 +1806,7 @@ function AppContent() {
       loginTimeoutRef.current = setTimeout(async () => {
         const currentUrl = lastWebUrlRef.current;
         if (!currentUrl || currentUrl.includes("/login")) {
+          console.log('===== [Doctor Login] 55s timeout fired — WebView still on login. lastUrl:', currentUrl);
           await AsyncStorage.multiRemove([
             STORAGE_KEYS.IS_LOGGED_IN,
             STORAGE_KEYS.SAVE_WEB_URL,
@@ -1747,6 +1823,7 @@ function AppContent() {
         }
       }, 55000);
     } catch (e: any) {
+      console.log('===== [Doctor Login] CATCH error:', e?.message, e);
       Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
       setLoading(false);
     }
@@ -1893,6 +1970,45 @@ function AppContent() {
     );
   }
 
+  // Show the system location permission popup.
+  // Falls back to App Settings only when permanently denied (OS blocks the dialog).
+  const requestLocationPermission = async () => {
+    if (Platform.OS === 'android') {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        {
+          title: 'Location Permission',
+          message: 'HealthRay needs your location to track your position.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
+        },
+      );
+      if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        await openAppSettings();
+      } else {
+        const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+        webRef.current?.injectJavaScript(`
+          (function() {
+            window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+              detail: { granted: ${granted} }
+            }));
+          })(); true;
+        `);
+      }
+    } else {
+      const auth = await Geolocation.requestAuthorization('whenInUse');
+      const granted = auth === 'granted';
+      if (!granted) { await openAppSettings(); }
+      webRef.current?.injectJavaScript(`
+        (function() {
+          window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+            detail: { granted: ${granted} }
+          }));
+        })(); true;
+      `);
+    }
+  };
+
   const handleMessage = async (event: any) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
@@ -1900,7 +2016,7 @@ function AppContent() {
       // ─── PDF (existing) ──────────────────────────────────────────────────
       if (message?.type === 'pdf') {
         if (!message?.data) return;
-        const base64Data = message.data.replace('data:application/pdf;base64,', '');
+        const base64Data = message.data.replace(/^data:[^;]+;base64,/, '').trim();
 
         if (Platform.OS === 'android') {
           const folderPath =
@@ -1932,7 +2048,7 @@ function AppContent() {
         );
 
         if (!Number.isFinite(employeeId) || !Number.isFinite(organizationId)) {
-          console.warn('[HRMS] START_TRACKING missing employee_id or organization_id');
+          console.log('[HRMS] START_TRACKING missing employee_id or organization_id');
           return;
         }
 
@@ -1965,11 +2081,30 @@ function AppContent() {
         return;
       }
 
+      // ─── OPEN_LOCATION_SETTINGS (web retryGpsLostSession bridge) ───────────
+      if (message?.type === 'OPEN_LOCATION_SETTINGS') {
+        await requestLocationPermission();
+        return;
+      }
+
+      // ─── REQUEST_LOCATION_PERMISSION (generic one-shot permission request) ─
+      if (message?.type === 'REQUEST_LOCATION_PERMISSION') {
+        const granted = await hrmsTracker.requestPermission();
+        webRef.current?.injectJavaScript(`
+          (function() {
+            window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+              detail: { granted: ${granted} }
+            }));
+          })(); true;
+        `);
+        return;
+      }
+
       // ─── GET_LOCATION (one-shot bridge for navigator.geolocation) ────────
       if (message?.type === 'GET_LOCATION') {
         const callbackId: string = message?.data?.callbackId ?? '';
         if (!/^geo_\d+_\d+$/.test(callbackId)) {
-          console.warn('[HRMS] GET_LOCATION rejected — invalid callbackId shape');
+          console.log('[HRMS] GET_LOCATION rejected — invalid callbackId shape');
           return;
         }
         Geolocation.getCurrentPosition(
@@ -2129,9 +2264,17 @@ function AppContent() {
           setDisplayZoomControls={false}
           bounces={false}
           scrollEnabled={true}
+          originWhitelist={['https://*', 'http://*', 'app-settings:*']}
           onMessage={handleMessage}
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
+          onShouldStartLoadWithRequest={(request) => {
+            if (request.url.startsWith('app-settings:')) {
+              requestLocationPermission();
+              return false;
+            }
+            return true;
+          }}
         />
 
         {loading && (
@@ -2158,6 +2301,7 @@ function AppContent() {
             </View>
           </View>
         </Modal>
+
       </SafeAreaView>
     );
   }
