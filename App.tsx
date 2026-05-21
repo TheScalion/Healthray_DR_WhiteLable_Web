@@ -47,7 +47,7 @@ import Geolocation from 'react-native-geolocation-service';
 const IS_STAGING = true;
 
 const API_BASE = IS_STAGING
-  ? 'https://192.168.1.83:4012'
+  ? 'https://node-stage.healthray.com'
   : 'https://node.healthray.com';
 
 const WEB_BASE = IS_STAGING
@@ -181,6 +181,7 @@ function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng:
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
+
 // Guarantees a point per 10 s instead of relying on watchPosition's
 // distanceFilter+interval (which dropped 3-7 min gaps in the data).
 
@@ -2155,10 +2156,17 @@ function AppContent() {
       reader.readAsDataURL(blob);
     }
 
+    const isPdf = function(blob) {
+      return blob && blob.type === 'application/pdf';
+    };
+
     const originalOpen = window.open;
     window.open = function(url) {
       if (url && url.startsWith('blob:')) {
-        fetch(url).then(res => res.blob()).then(blob => sendBlob(blob));
+        fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
+          if (isPdf(blob)) { sendBlob(blob); }
+          else { originalOpen.call(window, url); }
+        });
         return null;
       }
       return originalOpen.apply(this, arguments);
@@ -2167,14 +2175,16 @@ function AppContent() {
     document.addEventListener('click', function(e) {
       const element = e.target.closest('a');
       if (element && element.href && element.href.startsWith('blob:')) {
-        fetch(element.href).then(res => res.blob()).then(blob => sendBlob(blob));
         e.preventDefault();
+        fetch(element.href).then(function(res) { return res.blob(); }).then(function(blob) {
+          if (isPdf(blob)) { sendBlob(blob); }
+        });
       }
     });
 
     const originalCreateObjectURL = URL.createObjectURL;
     URL.createObjectURL = function(blob) {
-      sendBlob(blob);
+      if (isPdf(blob)) { sendBlob(blob); }
       return originalCreateObjectURL.apply(this, arguments);
     };
   })();
