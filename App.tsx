@@ -44,7 +44,7 @@ import Geolocation from 'react-native-geolocation-service';
 // Set IS_STAGING = true  → staging  (devfront.healthray.com / node-stage)
 // Set IS_STAGING = false → production (ray.healthray.com / node)
 // Flip this one flag before building; all URLs below update automatically.
-const IS_STAGING = true;
+const IS_STAGING = false;
 
 const API_BASE = IS_STAGING
   ? 'https://node-stage.healthray.com'
@@ -1452,8 +1452,8 @@ function AppContent() {
 
   const [showWeb, setShowWeb] = useState(false);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("1234554321");
-  const [password, setPassword] = useState("Ravi@1234");
+  const [mobileNo, setMobileNo] = useState("");
+  const [password, setPassword] = useState("");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1711,6 +1711,7 @@ function AppContent() {
       return;
     }
 
+    console.log("==============Click==============")
     setLoading(true);
     Keyboard.dismiss();
 
