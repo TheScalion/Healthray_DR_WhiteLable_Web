@@ -48,7 +48,7 @@ const IS_TABLET = width >= 768;
 
 
 const BASE_URL = 'https://heritagenode.healthray.com/api/v2/';
-const BASE_URL1 = 'https://heritagenode.healthray.com/api/v1/';
+const BASE_URL1 = 'https://node.heritageimshospital.com/api/v2/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
@@ -243,7 +243,7 @@ function AppContent() {
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          timeout: 15000, // optional but useful
+          timeout: 25000, // optional but useful
         }
       );
 
@@ -371,7 +371,7 @@ function AppContent() {
       const payload = {
         user: {
           mobile_no: mobileNo,
-          password: encryptedPassword,
+          password: password,
           platform: Platform.OS === "android" ? "Android" : "iOS",
           user_type: userType,
         },
@@ -381,7 +381,7 @@ function AppContent() {
 
       // API call
       const res = await fetch(
-        "https://heritagenode.healthray.com/api/v2/users/sign_in",
+        "https://node.heritageimshospital.com/api/v1/users/sign_in",
         {
           method: "POST",
           headers: {
@@ -442,7 +442,7 @@ function AppContent() {
             "Something went wrong. Please try again or check your internet connection."
           );
         }
-      }, 55000);
+      }, 100000);
 
 
     } catch (e: any) {
