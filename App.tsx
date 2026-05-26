@@ -1715,12 +1715,19 @@ function AppContent() {
     setLoading(true);
     Keyboard.dismiss();
 
-    // Staff login always skips the native sign_in API (doctor-only endpoint).
+    const ENV = IS_STAGING ? 'STAGING' : 'PROD';
+    const TAG = `[LOGIN][${ENV}][${userType}]`;
+    const maskedMobile = mobileNo.slice(0, -4).replace(/./g, '*') + mobileNo.slice(-4);
+    console.log(`${TAG} ── START ── mobile: ${maskedMobile} | platform: ${Platform.OS}`);
+
+    // Staff (Invitee) login skips the native sign_in API (doctor-only endpoint).
     // Staging also skips it because the staging /api/v2/users/sign_in returns 500.
     // In both cases the WebView auto-fill script handles authentication.
     if (userType === 'Invitee' || IS_STAGING) {
+      const skipReason = IS_STAGING ? 'staging env — native API returns 500' : 'Staff/Invitee — doctor-only API skipped';
+      console.log(`${TAG} → Path: WebView auto-fill | Reason: ${skipReason}`);
+      console.log(`${TAG} → Loading WebView at: ${LOGIN_URL}`);
       try {
-        console.log(`===== [${userType}] Skipping native sign_in (${IS_STAGING ? 'staging env' : 'staff user'}) — WebView auto-fill will handle login`);
         await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, 'true');
         isFirstWebLoadRef.current = true;
         setInitialWebUrl(LOGIN_URL);
@@ -1731,6 +1738,7 @@ function AppContent() {
         loginTimeoutRef.current = setTimeout(async () => {
           const currentUrl = lastWebUrlRef.current;
           if (!currentUrl || currentUrl.includes("/login")) {
+            console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login | lastUrl: ${currentUrl}`);
             await AsyncStorage.multiRemove([
               STORAGE_KEYS.IS_LOGGED_IN,
               STORAGE_KEYS.SAVE_WEB_URL,
@@ -1745,13 +1753,14 @@ function AppContent() {
           }
         }, 55000);
       } catch (e: any) {
+        console.log(`${TAG} ✗ CATCH — ${e?.message}`, e);
         Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
         setLoading(false);
       }
       return;
     }
 
-    // Doctor login: use native sign_in API to obtain HRMS tracking tokens.
+    // Doctor + Production: call native sign_in API to obtain HRMS tracking tokens.
     try {
       const passwordPayload = JSON.stringify({
         text: password,
@@ -1767,23 +1776,20 @@ function AppContent() {
         },
       };
 
-      console.log('===== [Doctor Login] URL:', SIGN_IN_URL);
-      console.log('===== [Doctor Login] payload:', JSON.stringify(payload, null, 2));
+      console.log(`${TAG} → Path: Native API | URL: ${SIGN_IN_URL}`);
+      console.log(`${TAG} → Payload:`, payload);
 
-      const res = await fetch(
-        SIGN_IN_URL,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(payload),
-        }
-      );
+      const res = await fetch(SIGN_IN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
 
       const data = await res.json();
-      console.log('===== [Doctor Login] status:', res.status, '| response:', JSON.stringify(data, null, 2));
+      console.log(`${TAG} ← API status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message ?? '—'}`);
 
       if (!res.ok || data?.statusState !== "success") {
-        console.log('===== [Doctor Login] FAILED — statusState:', data?.statusState, '| message:', data?.message);
+        console.log(`${TAG} ✗ FAILED — status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message}`);
         Alert.alert("Login Failed", data?.message || "Unable to sign in");
         setLoading(false);
         return;
@@ -1808,7 +1814,7 @@ function AppContent() {
       loginTimeoutRef.current = setTimeout(async () => {
         const currentUrl = lastWebUrlRef.current;
         if (!currentUrl || currentUrl.includes("/login")) {
-          console.log('===== [Doctor Login] 55s timeout fired — WebView still on login. lastUrl:', currentUrl);
+          console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login after API success | lastUrl: ${currentUrl}`);
           await AsyncStorage.multiRemove([
             STORAGE_KEYS.IS_LOGGED_IN,
             STORAGE_KEYS.SAVE_WEB_URL,
@@ -1825,7 +1831,7 @@ function AppContent() {
         }
       }, 55000);
     } catch (e: any) {
-      console.log('===== [Doctor Login] CATCH error:', e?.message, e);
+      console.log(`${TAG} ✗ CATCH — ${e?.message}`, e);
       Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
       setLoading(false);
     }
