@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "366326426062",
+    "firebase_url": "https://healthray-dr.firebaseio.com",
+    "project_id": "healthray-dr",
+    "storage_bucket": "healthray-dr.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:366326426062:android:45277a013c52e2215da39f",
+        "android_client_info": {
+          "package_name": "com.healthray.doctor"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "366326426062-262bcf5o5ia6j39fb2jri7hc9n3d75g2.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDmldUNcIZj_zlixrk0sc7nKI5Nh4x2c-g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "366326426062-262bcf5o5ia6j39fb2jri7hc9n3d75g2.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "366326426062-jq3c09mnrradtc93t59t6tgpqqsnv5ct.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.healthray.doctor"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

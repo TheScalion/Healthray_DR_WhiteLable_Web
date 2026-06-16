@@ -26,6 +26,9 @@
     <!-- Notifications (Android 13+) — required for the foreground service notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Full-screen intent — required for notifee fullScreenAction to wake the screen on an incoming driver call -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
     <!-- Boot receiver — restart WorkManager health check and resume session after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 

@@ -1,5 +1,10 @@
 import 'react-native-get-random-values';
 import React, { useRef, useState, useEffect } from "react";
+import messaging from '@react-native-firebase/messaging';
+import notifee, { EventType } from '@notifee/react-native';
+import { initFCM, getFCMToken } from './src/services/fcmService';
+import { showCallNotification } from './src/services/notificationHandler';
+import { rememberSession, syncDeviceToken, configureApiBase } from './src/services/deviceToken';
 import {
   View,
   Text,
@@ -204,6 +209,7 @@ const TRACKING_STORAGE = {
   LAST_ACTIVITY_TS: 'tracking_last_activity_ts',
   AUTH_TOKEN: 'auth_token',
   DEVICE_TOKEN: 'device_token',
+  FCM_TOKEN: 'fcm_registration_token',
 };
 const trackingSessionKey = (empId: number | string) => `tracking_session_id_${empId}`;
 const trackingBufferKey = (sessionId: string) => `tracking_buffer_${sessionId}`;
@@ -1449,6 +1455,8 @@ function AppContent() {
   const pendingAutoFill = useRef<string | null>(null);
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
+  const fcmTokenRef = useRef<string>('');
+  const loginTypeRef = useRef<string>('Doctor');
 
   const { isConnected, isInternetReachable } = useNetInfo();
 
@@ -1456,7 +1464,8 @@ function AppContent() {
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
   const [mobileNo, setMobileNo] = useState("");
   const [password, setPassword] = useState("");
-  const [userType, setUserType] = useState('Doctor');
+  const [userType, setUserType] = useState("Doctor");
+  console.log("=============>userType", userType)
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [preWarmMode, setPreWarmMode] = useState(false);
@@ -1500,14 +1509,79 @@ function AppContent() {
   useEffect(() => {
     const requestPermissions = async () => {
       if (Platform.OS === 'android') {
-        await PermissionsAndroid.requestMultiple([
+        const perms: string[] = [
           PermissionsAndroid.PERMISSIONS.CAMERA,
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        ]);
+        ];
+        // Android 13+ (API 33) requires runtime POST_NOTIFICATIONS grant
+        if ((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS) {
+          perms.push((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS);
+        }
+        await PermissionsAndroid.requestMultiple(perms as any);
       }
     };
     requestPermissions();
   }, []);
+
+  // ─── Firebase Cloud Messaging ─────────────────────────────────────────────
+  useEffect(() => {
+    // Let deviceToken.ts know which backend to use
+    configureApiBase(API_BASE);
+
+    let unsubscribeFcm: () => void = () => { };
+
+    console.log('[FCM] initFCM → calling...');
+    initFCM(async (newToken) => {
+      fcmTokenRef.current = newToken;
+      console.log('[FCM] Token refreshed in ref:', newToken);
+      // Keep the auth_tokens row current without requiring re-login
+      await syncDeviceToken(newToken);
+    }).then(({ token, unsubscribe: unsub }) => {
+      unsubscribeFcm = unsub;
+      if (token) {
+        fcmTokenRef.current = token;
+        console.log('[FCM] ✅ Token set in ref:', token);
+      } else {
+        console.log('[FCM] ⚠ initFCM resolved with EMPTY token — check: google-services.json present? npm install done? permission granted?');
+      }
+    }).catch((e) => {
+      console.log('[FCM] ❌ initFCM threw error:', e);
+    });
+
+    // Cold-start: token may have rotated while app was fully closed → reconcile now
+    syncDeviceToken();
+
+    // Background tap: app was in background, user taps a driver-call notification
+    const unsubscribeBgTap = messaging().onNotificationOpenedApp((remoteMessage: any) => {
+      const type = remoteMessage?.data?.notification_type;
+      if (type === 'AMBULANCE_CALL_DISPATCHED' || type === 'AMBULANCE_CALL_REASSIGNED') {
+        setTimeout(() => {
+          webRef.current?.injectJavaScript(`window.location.href = '/ambulance/driver'; true;`);
+        }, 500);
+      }
+    });
+
+    // Quit-state tap: app killed → user taps notifee notification → open driver page
+    notifee.getInitialNotification().then(initial => {
+      if (initial?.notification?.data?.call_id) {
+        setInitialWebUrl(`${WEB_BASE}/ambulance/driver`);
+      }
+    });
+
+    // Foreground tap: user taps the notifee notification while app is open
+    const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
+      if (type === EventType.PRESS && detail.notification?.data?.call_id) {
+        webRef.current?.injectJavaScript(`window.location.href = '/ambulance/driver'; true;`);
+      }
+    });
+
+    return () => {
+      unsubscribeFcm();
+      unsubscribeBgTap();
+      unsubscribeNotifee();
+    };
+  }, []);
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // Network online/offline tracking — used to reload WebView on reconnect.
   // Same reasoning as showInternetModel: trust isConnected, ignore the
@@ -1716,6 +1790,7 @@ function AppContent() {
     }
 
     console.log("==============Click==============")
+    loginTypeRef.current = userType;
     setLoading(true);
     Keyboard.dismiss();
 
@@ -1782,6 +1857,22 @@ function AppContent() {
         time: convertLocalTimeToUtcTime(),
       });
       const encryptedPassword = encryptText(passwordPayload);
+
+      // Always call getToken() directly — guaranteed to return the current
+      // valid token even after a clean rebuild (ref/AsyncStorage may be stale).
+      let fcmToken = '';
+      try {
+        fcmToken = await messaging().getToken();
+        if (fcmToken) {
+          fcmTokenRef.current = fcmToken;
+          console.log(`${TAG} → FCM device_token (fresh): ${fcmToken}`);
+        } else {
+          console.log(`${TAG} → FCM device_token: EMPTY — getToken() returned null`);
+        }
+      } catch (e) {
+        console.log(`${TAG} → FCM getToken() error:`, e);
+      }
+
       const payload = {
         user: {
           mobile_no: mobileNo,
@@ -1792,11 +1883,17 @@ function AppContent() {
       };
 
       console.log(`${TAG} → Path: Native API | URL: ${SIGN_IN_URL}`);
-      console.log(`${TAG} → Payload:`, payload);
+      console.log(`${TAG} → Payload:`, JSON.stringify(payload));
+
 
       const res = await fetch(SIGN_IN_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          'X-Device-Token': fcmToken,
+          'X-Platform': Platform.OS === 'ios' ? 'iOS' : 'Android',
+        },
         body: JSON.stringify(payload),
       });
 
@@ -1814,12 +1911,16 @@ function AppContent() {
       // Persist auth tokens so the HRMS tracker can attach them to every
       // /tracking/* request without going through the WebView.
       const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
-      const deviceToken: string = data?.data?.device_token ?? data?.device_token ?? '';
-      await AsyncStorage.multiSet([
-        [STORAGE_KEYS.IS_LOGGED_IN, 'true'],
-        [TRACKING_STORAGE.AUTH_TOKEN, authToken],
-        [TRACKING_STORAGE.DEVICE_TOKEN, deviceToken],
-      ]);
+      const isDriver: boolean = !!(
+        data?.data?.isDriver ??
+        data?.isDriver ??
+        (data?.data?.user_type?.toLowerCase() === 'driver')
+      );
+      console.log(`${TAG} [FCM] isDriver=${isDriver} | raw fields → data.isDriver=${data?.data?.isDriver} data.user_type=${data?.data?.user_type}`);
+      console.log(`${TAG} [FCM] user_role will be set to: "${isDriver ? 'driver' : 'staff'}"`);
+      await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, 'true');
+      // rememberSession saves auth_token, device_token=native FCM token, user_role
+      await rememberSession(authToken, isDriver, fcmToken);
 
       isFirstWebLoadRef.current = true;
 
@@ -1895,6 +1996,31 @@ function AppContent() {
         loginTimeoutRef.current = null;
       }
       setTimeout(() => setLoading(false), 200);
+
+      // Invitee login never calls the native sign_in API, so the FCM token was
+      // never sent to the backend. Inject JS here to read the web session's auth
+      // tokens from localStorage, which are posted back via WEB_AUTH_TOKENS so
+      // native can call the backend FCM-registration endpoint.
+      console.log('[NAV] /select-organization reached | loginType:', loginTypeRef.current);
+      if (loginTypeRef.current === 'Invitee') {
+        console.log('[NAV] Injecting WEB_AUTH_TOKENS extraction script for Invitee');
+        setTimeout(() => {
+          webRef.current?.injectJavaScript(`
+            (function() {
+              try {
+                var cu = localStorage.getItem('currentUser');
+                var parsed = cu ? JSON.parse(cu) : {};
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'WEB_AUTH_TOKENS',
+                  auth_token: parsed.auth_token || parsed.authToken || localStorage.getItem('auth_token') || '',
+                  device_token: parsed.device_token || parsed.deviceToken || localStorage.getItem('device_token') || '',
+                }));
+              } catch(e) {}
+            })(); true;
+          `);
+        }, 800);
+      }
+
       return;
     }
 
@@ -1903,11 +2029,14 @@ function AppContent() {
       url.includes("/login") &&
       isFirstWebLoadRef.current
     ) {
+      // Invalidate FCM token at Firebase so no further pushes reach this device
+      try { await messaging().deleteToken(); } catch { /* ignore */ }
       await AsyncStorage.multiRemove([
         STORAGE_KEYS.IS_LOGGED_IN,
         STORAGE_KEYS.SAVE_WEB_URL,
         TRACKING_STORAGE.AUTH_TOKEN,
         TRACKING_STORAGE.DEVICE_TOKEN,
+        'user_role',
       ]);
       wasLoggedInRef.current = false;
       setShowWeb(false);
@@ -2110,6 +2239,43 @@ function AppContent() {
         `);
 
         await hrmsTracker.start(employeeId, organizationId);
+        return;
+      }
+
+      // ─── WEB_AUTH_TOKENS (Invitee FCM registration) ─────────────────────
+      // Fired after Invitee WebView login lands on /select-organization.
+      // Strategy (per guide Part 0.5):
+      //   1. Store the web's device_token as the current row value.
+      //   2. Call syncDeviceToken(nativeFcmToken) which hits
+      //      POST /api/v1/users/refresh_token with X-Device-Token=webToken
+      //      and body { device_token: nativeFcmToken } — replacing the web
+      //      token in auth_tokens with the native FCM token.
+      if (message?.type === 'WEB_AUTH_TOKENS') {
+        console.log('[WEB_AUTH_TOKENS] ── message received ──');
+
+        const authToken: string = message?.auth_token ?? '';
+        const webDeviceToken: string = message?.device_token ?? '';
+        const nativeFcmToken = fcmTokenRef.current || await getFCMToken();
+
+        console.log('[WEB_AUTH_TOKENS] auth_token :', authToken ? `${authToken.slice(0, 10)}...` : 'EMPTY');
+        console.log('[WEB_AUTH_TOKENS] web_device_token:', webDeviceToken ? `${webDeviceToken}` : 'EMPTY');
+        console.log('[WEB_AUTH_TOKENS] native_fcm_token:', nativeFcmToken ? `${nativeFcmToken}` : 'EMPTY');
+
+        if (!authToken) {
+          console.log('[WEB_AUTH_TOKENS] ⚠ auth_token empty — web localStorage key may differ, token not synced');
+          return;
+        }
+        if (!nativeFcmToken) {
+          console.log('[WEB_AUTH_TOKENS] ⚠ native FCM token empty — Firebase not initialised yet, token not synced');
+          return;
+        }
+
+        // Invitee is staff, not driver — user_role = 'staff'
+        // Store web device_token so syncDeviceToken can send it as X-Device-Token
+        await rememberSession(authToken, false, webDeviceToken);
+        // Replace the web token in the auth_tokens row with the native FCM token
+        await syncDeviceToken(nativeFcmToken);
+        console.log('[WEB_AUTH_TOKENS] ✅ native FCM token synced to backend via refresh_token');
         return;
       }
 
@@ -2415,6 +2581,7 @@ function AppContent() {
               domStorageEnabled
               cacheEnabled
               mixedContentMode="always"
+              injectedJavaScriptBeforeContentLoaded="window.isNativeApp = true; true;"
               injectedJavaScript={combinedScript}
               scalesPageToFit={false}
               setBuiltInZoomControls={false}
