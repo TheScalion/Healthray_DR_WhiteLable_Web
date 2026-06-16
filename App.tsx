@@ -1445,6 +1445,8 @@ function AppContent() {
   const isFirstWebLoadRef = useRef(true);
   const lastWebUrlRef = useRef<string>('');
   const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loginPageReady = useRef(false);
+  const pendingAutoFill = useRef<string | null>(null);
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
 
@@ -1457,6 +1459,7 @@ function AppContent() {
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [preWarmMode, setPreWarmMode] = useState(false);
   const [mobileNoError, setMobileNoError] = useState<string | null>(null);
   const [netInfoReady, setNetInfoReady] = useState(false);
   // Show the "No Internet" modal only when isConnected is DEFINITIVELY false.
@@ -1596,7 +1599,8 @@ function AppContent() {
         setInitialWebUrl(savedUrl ?? LOGIN_URL);
         setShowWeb(true);
       } else {
-        setShowWeb(false);
+        // Pre-warm the WebView at /login in the background while user fills credentials
+        setPreWarmMode(true);
       }
     };
     checkLoginState();
@@ -1730,7 +1734,16 @@ function AppContent() {
       try {
         await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, 'true');
         isFirstWebLoadRef.current = true;
-        setInitialWebUrl(LOGIN_URL);
+
+        const fillScript = buildAutoFillScript(mobileNo, password, userType);
+        if (loginPageReady.current) {
+          // Pre-warm complete — login page already loaded, inject immediately
+          setTimeout(() => webRef.current?.injectJavaScript(fillScript), 100);
+        } else {
+          // Page still loading — inject as soon as handleLoadEnd fires
+          pendingAutoFill.current = fillScript;
+        }
+
         setShowWeb(true);
 
         if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
@@ -1739,6 +1752,8 @@ function AppContent() {
           const currentUrl = lastWebUrlRef.current;
           if (!currentUrl || currentUrl.includes("/login")) {
             console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login | lastUrl: ${currentUrl}`);
+            loginPageReady.current = false;
+            pendingAutoFill.current = null;
             await AsyncStorage.multiRemove([
               STORAGE_KEYS.IS_LOGGED_IN,
               STORAGE_KEYS.SAVE_WEB_URL,
@@ -1787,6 +1802,7 @@ function AppContent() {
 
       const data = await res.json();
       console.log(`${TAG} ← API status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message ?? '—'}`);
+      console.log("===============>", data)
 
       if (!res.ok || data?.statusState !== "success") {
         console.log(`${TAG} ✗ FAILED — status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message}`);
@@ -1806,7 +1822,16 @@ function AppContent() {
       ]);
 
       isFirstWebLoadRef.current = true;
-      setInitialWebUrl(LOGIN_URL);
+
+      const fillScript = buildAutoFillScript(mobileNo, password, userType);
+      if (loginPageReady.current) {
+        // Pre-warm complete — login page already loaded, inject immediately
+        setTimeout(() => webRef.current?.injectJavaScript(fillScript), 100);
+      } else {
+        // Page still loading — inject as soon as handleLoadEnd fires
+        pendingAutoFill.current = fillScript;
+      }
+
       setShowWeb(true);
 
       if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
@@ -1815,6 +1840,8 @@ function AppContent() {
         const currentUrl = lastWebUrlRef.current;
         if (!currentUrl || currentUrl.includes("/login")) {
           console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login after API success | lastUrl: ${currentUrl}`);
+          loginPageReady.current = false;
+          pendingAutoFill.current = null;
           await AsyncStorage.multiRemove([
             STORAGE_KEYS.IS_LOGGED_IN,
             STORAGE_KEYS.SAVE_WEB_URL,
@@ -1840,12 +1867,16 @@ function AppContent() {
   const handleLoadEnd = (e: any) => {
     const url = e.nativeEvent.url.toLowerCase();
     if (url.includes("/login")) {
-      setTimeout(() => {
-        webRef.current?.injectJavaScript(autoFillScript);
-      }, 800);
+      loginPageReady.current = true;
+      // Inject credentials immediately if login API already returned (pre-warm hit)
+      if (pendingAutoFill.current) {
+        const script = pendingAutoFill.current;
+        pendingAutoFill.current = null;
+        setTimeout(() => webRef.current?.injectJavaScript(script), 100);
+      }
     }
     if (url.includes("/select-organization")) {
-      setTimeout(() => setLoading(false), 1500);
+      setTimeout(() => setLoading(false), 200);
     }
   };
 
@@ -1863,7 +1894,7 @@ function AppContent() {
         clearTimeout(loginTimeoutRef.current);
         loginTimeoutRef.current = null;
       }
-      setTimeout(() => setLoading(false), 1500);
+      setTimeout(() => setLoading(false), 200);
       return;
     }
 
@@ -1899,18 +1930,18 @@ function AppContent() {
     true;
   `;
 
-  // JSON.stringify produces a properly quoted-and-escaped JS string literal —
-  // safe against ', ", \, \n, and Unicode in user input.
-  const safeMobile = JSON.stringify(mobileNo);
-  const safePassword = JSON.stringify(password);
-  const safeUserType = JSON.stringify(userType);
-
-  const autoFillScript = `
+  // Builds the auto-fill injection script with actual credential values baked in.
+  // Called at login time (not at render time) so values are always fresh.
+  const buildAutoFillScript = (mobile: string, pass: string, uType: string): string => {
+    const safeMobile = JSON.stringify(mobile);
+    const safePassword = JSON.stringify(pass);
+    const safeUserType = JSON.stringify(uType);
+    return `
   (function autoLogin() {
     let attemptCount = 0;
     const maxAttempts = 3;
-    const retryDelay = 5000;
-    const clickDelay = 2000;
+    const retryDelay = 3000;
+    const clickDelay = 400;
 
     function performClick() {
       if (attemptCount >= maxAttempts) {
@@ -1948,12 +1979,19 @@ function AppContent() {
             setTimeout(performClick, retryDelay);
           }
         }, clickDelay);
+      } else {
+        // Elements not ready yet — retry shortly
+        attemptCount++;
+        if (attemptCount < maxAttempts) {
+          setTimeout(performClick, 1000);
+        }
       }
     }
-    setTimeout(performClick, 2000);
+    setTimeout(performClick, 300);
   })();
   true;
-  `;
+    `;
+  };
 
   /* ================= WEB VIEW ================= */
 
@@ -2265,64 +2303,6 @@ function AppContent() {
   true;
   `;
 
-  if (showWeb) {
-    return (
-      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        <WebView
-          ref={webRef}
-          source={{ uri: initialWebUrl }}
-          style={{ flex: 1, opacity: loading ? 0 : 1 }}
-          javaScriptEnabled
-          domStorageEnabled
-          mixedContentMode="always"
-          injectedJavaScript={combinedScript}
-          scalesPageToFit={false}
-          setBuiltInZoomControls={false}
-          setDisplayZoomControls={false}
-          bounces={false}
-          scrollEnabled={true}
-          originWhitelist={['https://*', 'http://*', 'app-settings:*']}
-          onMessage={handleMessage}
-          onLoadEnd={handleLoadEnd}
-          onNavigationStateChange={handleNavigationStateChange}
-          onShouldStartLoadWithRequest={(request) => {
-            if (request.url.startsWith('app-settings:')) {
-              requestLocationPermission();
-              return false;
-            }
-            return true;
-          }}
-        />
-
-        {loading && (
-          <View style={styles.overlay}>
-            <LottieView
-              source={require('./src/common/Loader.json')}
-              autoPlay
-              loop
-              style={styles.lottie}
-            />
-          </View>
-        )}
-
-        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>No Internet</Text>
-              <Text style={styles.modalText}>
-                Please check your internet connection
-              </Text>
-              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]}>
-                <Text style={styles.buttonText}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
-
-      </SafeAreaView>
-    );
-  }
-
   const renderMobileUI = () => (
     <>
       {!IS_TABLET && (
@@ -2409,7 +2389,100 @@ function AppContent() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+    </>
+  );
 
+  /* ================= UNIFIED RENDER ================= */
+  // The WebView is mounted as soon as the user is confirmed NOT logged in
+  // (preWarmMode=true) so the /login page loads in the background while the
+  // user fills their credentials. When showWeb becomes true, the same instance
+  // becomes visible — no cold-mount penalty after login.
+  return (
+    <View style={{ flex: 1 }}>
+
+      {/* WebView — always mounted during pre-warm or active session */}
+      {(preWarmMode || showWeb) && (
+        <View
+          style={[StyleSheet.absoluteFill, !showWeb && { opacity: 0 }]}
+          pointerEvents={showWeb ? 'auto' : 'none'}
+        >
+          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+            <WebView
+              ref={webRef}
+              source={{ uri: initialWebUrl }}
+              style={{ flex: 1 }}
+              javaScriptEnabled
+              domStorageEnabled
+              cacheEnabled
+              mixedContentMode="always"
+              injectedJavaScript={combinedScript}
+              scalesPageToFit={false}
+              setBuiltInZoomControls={false}
+              setDisplayZoomControls={false}
+              bounces={false}
+              scrollEnabled={true}
+              originWhitelist={['https://*', 'http://*', 'app-settings:*']}
+              onMessage={handleMessage}
+              onLoadEnd={handleLoadEnd}
+              onNavigationStateChange={handleNavigationStateChange}
+              onShouldStartLoadWithRequest={(request) => {
+                if (request.url.startsWith('app-settings:')) {
+                  requestLocationPermission();
+                  return false;
+                }
+                return true;
+              }}
+            />
+          </SafeAreaView>
+        </View>
+      )}
+
+      {/* Login UI — shown on top of hidden pre-warm WebView */}
+      {!showWeb && (
+        <KeyboardAvoidingView
+          style={{ flex: 1, backgroundColor: '#fff' }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+        >
+          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+            {IS_TABLET ? (
+              <>
+                <View style={styles.header}>
+                  <Text style={styles.headerTitle}>Login Here</Text>
+                </View>
+                <View style={{ flex: 1, flexDirection: 'row' }}>
+                  <View style={styles.tabletLeft}>
+                    <Image
+                      source={require('./src/common/BannerLogo.png')}
+                      style={styles.tabletImage}
+                      resizeMode="contain"
+                    />
+                  </View>
+                  <View style={styles.tabletRight}>
+                    {renderMobileUI()}
+                  </View>
+                </View>
+              </>
+            ) : (
+              renderMobileUI()
+            )}
+          </SafeAreaView>
+        </KeyboardAvoidingView>
+      )}
+
+      {/* Loading overlay — covers both WebView and login screen */}
+      {loading && (
+        <View style={styles.overlay}>
+          <LottieView
+            source={require('./src/common/Loader.json')}
+            autoPlay
+            loop
+            style={styles.lottie}
+          />
+        </View>
+      )}
+
+      {/* No Internet modal — single instance, works in any app state */}
       <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
@@ -2423,53 +2496,8 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-    </>
-  );
 
-  /* ================= LOGIN UI ================= */
-  return (
-    <>
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: '#fff' }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-      >
-        <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-          {IS_TABLET ? (
-            <>
-              <View style={styles.header}>
-                <Text style={styles.headerTitle}>Login Here</Text>
-              </View>
-              <View style={{ flex: 1, flexDirection: 'row' }}>
-                <View style={styles.tabletLeft}>
-                  <Image
-                    source={require('./src/common/BannerLogo.png')}
-                    style={styles.tabletImage}
-                    resizeMode="contain"
-                  />
-                </View>
-                <View style={styles.tabletRight}>
-                  {renderMobileUI()}
-                </View>
-              </View>
-            </>
-          ) : (
-            renderMobileUI()
-          )}
-        </SafeAreaView>
-      </KeyboardAvoidingView>
-
-      {loading && (
-        <View style={styles.overlay}>
-          <LottieView
-            source={require('./src/common/Loader.json')}
-            autoPlay
-            loop
-            style={styles.lottie}
-          />
-        </View>
-      )}
-    </>
+    </View>
   );
 }
 
