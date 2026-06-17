@@ -1283,7 +1283,7 @@ class HRMSLocationTracker {
         const oemAsked = await AsyncStorage.getItem('tracking_oem_battery_asked');
         if (!oemAsked && BatteryOptimization) {
           await AsyncStorage.setItem('tracking_oem_battery_asked', 'true');
-          BatteryOptimization.launchOemSettings().catch(() => {});
+          BatteryOptimization.launchOemSettings().catch(() => { });
         }
       }
 
@@ -1418,6 +1418,10 @@ function AppContent() {
   const { isConnected, isInternetReachable } = useNetInfo();
 
   const [showWeb, setShowWeb] = useState(false);
+  // Gate the WebView mount until checkLoginState resolves, so it mounts once
+  // with the correct source (savedUrl when logged in, LOGIN_URL to pre-warm
+  // when logged out) and never double-loads.
+  const [bootResolved, setBootResolved] = useState(false);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
   const [mobileNo, setMobileNo] = useState("");
   const [password, setPassword] = useState("");
@@ -1452,6 +1456,7 @@ function AppContent() {
 
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
+    console.log(new Date().toISOString(), '111111111');
   }, []);
 
   // Hydrate currentUser from AsyncStorage so it's available immediately after app reopen
@@ -1563,8 +1568,13 @@ function AppContent() {
         setInitialWebUrl(savedUrl ?? LOGIN_URL);
         setShowWeb(true);
       } else {
+        // Logged out: mount the WebView with LOGIN_URL so the Angular SPA
+        // boots (pre-warms) behind the native login screen.
+        setInitialWebUrl(LOGIN_URL);
         setShowWeb(false);
       }
+      // Source is now decided — allow the WebView to mount.
+      setBootResolved(true);
     };
     checkLoginState();
   }, []);
@@ -1680,86 +1690,120 @@ function AppContent() {
 
     setLoading(true);
     Keyboard.dismiss();
-    try {
-      const passwordPayload = JSON.stringify({
-        text: password,
-        time: convertLocalTimeToUtcTime(),
-      });
-      const encryptedPassword = encryptText(passwordPayload);
-      const payload = {
-        user: {
-          mobile_no: mobileNo,
-          password: encryptedPassword,
-          platform: Platform.OS === "android" ? "Android" : "iOS",
-          user_type: userType,
-        },
-      };
 
-      const res = await fetch(
-        "https://node.healthray.com/api/v2/users/sign_in",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(payload),
-        }
-      );
+    // Reveal the already-warm WebView and start the web-side login immediately.
+    // We do NOT wait for the native sign_in below: the web login uses these
+    // credentials directly, and sign_in is only for HRMS tokens + early
+    // validation. The Angular SPA has been pre-warming behind the login screen,
+    // so this is the fast path.
+    isFirstWebLoadRef.current = true;
+    setInitialWebUrl(LOGIN_URL);
+    setShowWeb(true);
+    // The pre-warmed /login page already fired onLoadEnd, so handleLoadEnd
+    // won't re-fire — trigger the auto-fill explicitly. The autoFillScript in
+    // this render already carries the typed credentials.
+    webRef.current?.injectJavaScript(autoFillScript);
 
-      const data = await res.json();
-
-      if (!res.ok || data?.statusState !== "success") {
-        Alert.alert("Login Failed", data?.message || "Unable to sign in");
+    if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+    loginTimeoutRef.current = setTimeout(async () => {
+      const currentUrl = lastWebUrlRef.current;
+      if (!currentUrl || currentUrl.includes("/login")) {
+        await AsyncStorage.multiRemove([
+          STORAGE_KEYS.IS_LOGGED_IN,
+          STORAGE_KEYS.SAVE_WEB_URL,
+          TRACKING_STORAGE.AUTH_TOKEN,
+          TRACKING_STORAGE.DEVICE_TOKEN,
+        ]);
+        wasLoggedInRef.current = false;
+        setShowWeb(false);
         setLoading(false);
-        return;
+        Alert.alert(
+          "Login Failed",
+          "Something went wrong. Please try again or check your internet connection."
+        );
       }
+    }, 55000);
 
-      // Persist auth tokens so the HRMS tracker can attach them to every
-      // /tracking/* request without going through the WebView.
-      const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
-      const deviceToken: string = data?.data?.device_token ?? data?.device_token ?? '';
-      await AsyncStorage.multiSet([
-        [STORAGE_KEYS.IS_LOGGED_IN, 'true'],
-        [TRACKING_STORAGE.AUTH_TOKEN, authToken],
-        [TRACKING_STORAGE.DEVICE_TOKEN, deviceToken],
-      ]);
+    // Native sign_in runs concurrently (not on the critical path): it stores
+    // HRMS tokens on success and preserves fast wrong-password feedback.
+    (async () => {
+      try {
+        const passwordPayload = JSON.stringify({
+          text: password,
+          time: convertLocalTimeToUtcTime(),
+        });
+        const encryptedPassword = encryptText(passwordPayload);
+        const payload = {
+          user: {
+            mobile_no: mobileNo,
+            password: encryptedPassword,
+            platform: Platform.OS === "android" ? "Android" : "iOS",
+            user_type: userType,
+          },
+        };
 
-      isFirstWebLoadRef.current = true;
-      setInitialWebUrl(LOGIN_URL);
-      setShowWeb(true);
+        const res = await fetch(
+          "https://node.healthray.com/api/v2/users/sign_in",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify(payload),
+          }
+        );
 
-      if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+        const data = await res.json();
 
-      loginTimeoutRef.current = setTimeout(async () => {
-        const currentUrl = lastWebUrlRef.current;
-        if (!currentUrl || currentUrl.includes("/login")) {
-          await AsyncStorage.multiRemove([
-            STORAGE_KEYS.IS_LOGGED_IN,
-            STORAGE_KEYS.SAVE_WEB_URL,
-            TRACKING_STORAGE.AUTH_TOKEN,
-            TRACKING_STORAGE.DEVICE_TOKEN,
-          ]);
-          wasLoggedInRef.current = false;
-          setShowWeb(false);
-          setLoading(false);
-          Alert.alert(
-            "Login Failed",
-            "Something went wrong. Please try again or check your internet connection."
-          );
+        if (!res.ok || data?.statusState !== "success") {
+          // Native validation failed. Only abort if the web side hasn't already
+          // logged in (reached /select-organization) — otherwise a hiccup on the
+          // native call shouldn't tear down a good web session.
+          if (!wasLoggedInRef.current) {
+            if (loginTimeoutRef.current) {
+              clearTimeout(loginTimeoutRef.current);
+              loginTimeoutRef.current = null;
+            }
+            await AsyncStorage.multiRemove([
+              STORAGE_KEYS.IS_LOGGED_IN,
+              STORAGE_KEYS.SAVE_WEB_URL,
+              TRACKING_STORAGE.AUTH_TOKEN,
+              TRACKING_STORAGE.DEVICE_TOKEN,
+            ]);
+            setShowWeb(false);
+            setLoading(false);
+            Alert.alert("Login Failed", data?.message || "Unable to sign in");
+          }
+          return;
         }
-      }, 55000);
-    } catch (e: any) {
-      Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
-      setLoading(false);
-    }
+
+        // Persist auth tokens so the HRMS tracker can attach them to every
+        // /tracking/* request without going through the WebView.
+        const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
+        const deviceToken: string = data?.data?.device_token ?? data?.device_token ?? '';
+        await AsyncStorage.multiSet([
+          [STORAGE_KEYS.IS_LOGGED_IN, 'true'],
+          [TRACKING_STORAGE.AUTH_TOKEN, authToken],
+          [TRACKING_STORAGE.DEVICE_TOKEN, deviceToken],
+        ]);
+      } catch (e: any) {
+        // A native-call network error alone shouldn't kill the web login; the
+        // 55s timeout covers a fully-failed login.
+        console.warn('[login] native sign_in error', e?.message ?? e);
+      }
+    })();
   };
 
   const handleLoadEnd = (e: any) => {
     const url = e.nativeEvent.url.toLowerCase();
     if (url.includes("/login")) {
-      setTimeout(() => {
-        webRef.current?.injectJavaScript(autoFillScript);
-      }, 800);
+      // The script polls for form readiness itself, so inject as soon as the
+      // page DOM is loaded — no fixed pre-delay needed.
+      webRef.current?.injectJavaScript(autoFillScript);
     }
     if (url.includes("/select-organization")) {
+      // Hide the loader the moment the org page has rendered real content
+      // (WEB_READY), with a fixed 1500ms fallback so we never reveal a blank
+      // page on a slow render.
+      webRef.current?.injectJavaScript(webReadyProbeScript);
       setTimeout(() => setLoading(false), 1500);
     }
   };
@@ -1778,6 +1822,11 @@ function AppContent() {
         clearTimeout(loginTimeoutRef.current);
         loginTimeoutRef.current = null;
       }
+      // SPA route change (pushState) does NOT fire onLoadEnd, so the loader
+      // must be hidden from here too — WEB_READY probe + 1500ms fallback.
+      // setLoading(false) is idempotent, so handleLoadEnd firing as well (on a
+      // full load) is harmless.
+      webRef.current?.injectJavaScript(webReadyProbeScript);
       setTimeout(() => setLoading(false), 1500);
       return;
     }
@@ -1822,50 +1871,128 @@ function AppContent() {
 
   const autoFillScript = `
   (function autoLogin() {
-    let attemptCount = 0;
-    const maxAttempts = 3;
-    const retryDelay = 5000;
-    const clickDelay = 2000;
+    var mobileNo = ${safeMobile};
+    var password = ${safePassword};
+    var verificationType = ${safeUserType};
 
-    function performClick() {
-      if (attemptCount >= maxAttempts) {
-        console.log('🛑 Max login attempts reached');
-        return;
-      }
-      const url = window.location.href;
-      if (!url.includes('/login')) return;
+    // Skip entirely when we have no credentials to fill (e.g. cold-restart
+    // landing on /login). Prevents spurious clicks on a disabled button.
+    if (!mobileNo || !password) return;
 
-      const mobileInput = document.getElementById('mobile_no');
-      const passwordInput =
-        document.querySelector('#mat-input-1') ||
-        document.querySelector('input[type="password"]');
-      const loginButton = document.querySelector('button.submit-button');
-      const doctorButton = document.getElementById('mat-button-toggle-1-button');
-      const staffButton = document.getElementById('mat-button-toggle-2-button');
+    var POLL_INTERVAL = 250;     // re-check form readiness ~4x/sec
+    var MAX_WAIT = 30000;        // worst-case SPA ceiling, well under the native 55s timeout
+    var maxAttempts = 3;
+    var retryDelay = 5000;       // wait after a click before retrying if still on /login
 
-      const verificationType = ${safeUserType};
+    var startTime = Date.now();
+    var attemptCount = 0;
+    var submitted = false;
+    var typeSelected = false;
+
+    function selectUserType() {
+      var doctorButton = document.getElementById('mat-button-toggle-1-button');
+      var staffButton = document.getElementById('mat-button-toggle-2-button');
       if (verificationType.toLowerCase() === 'invitee') {
         if (staffButton) staffButton.click();
       } else {
         if (doctorButton) doctorButton.click();
       }
-
-      if (mobileInput && passwordInput && loginButton && !loginButton.disabled) {
-        mobileInput.value = ${safeMobile};
-        mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
-        passwordInput.value = ${safePassword};
-        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-        setTimeout(() => {
-          loginButton.click();
-          attemptCount++;
-          if (attemptCount < maxAttempts) {
-            setTimeout(performClick, retryDelay);
-          }
-        }, clickDelay);
-      }
     }
-    setTimeout(performClick, 2000);
+
+    function tick() {
+      if (submitted) return;
+      if (Date.now() - startTime > MAX_WAIT) {
+        console.log('🛑 autoLogin: form not ready before MAX_WAIT');
+        return;
+      }
+      if (!window.location.href.includes('/login')) return;
+      if (attemptCount >= maxAttempts) {
+        console.log('🛑 autoLogin: max attempts reached');
+        return;
+      }
+
+      var mobileInput = document.getElementById('mobile_no');
+      var passwordInput =
+        document.querySelector('#mat-input-1') ||
+        document.querySelector('input[type="password"]');
+      var loginButton = document.querySelector('button.submit-button');
+
+      // Form not rendered yet — keep waiting instead of giving up (slow-SPA fix).
+      if (!mobileInput || !passwordInput || !loginButton) {
+        setTimeout(tick, POLL_INTERVAL);
+        return;
+      }
+
+      // Select the doctor/staff toggle once, before filling.
+      if (!typeSelected) {
+        selectUserType();
+        typeSelected = true;
+      }
+
+      mobileInput.value = mobileNo;
+      mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      passwordInput.value = password;
+      passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Button may still be disabled until Angular validates the values we set.
+      // Re-filling the same value next tick is harmless.
+      if (loginButton.disabled) {
+        setTimeout(tick, POLL_INTERVAL);
+        return;
+      }
+
+      loginButton.click();
+      submitted = true;
+      attemptCount++;
+
+      // If we're still on /login after retryDelay, the submit didn't take —
+      // reset and try again (up to maxAttempts).
+      setTimeout(function () {
+        if (window.location.href.includes('/login') && attemptCount < maxAttempts) {
+          submitted = false;
+          tick();
+        }
+      }, retryDelay);
+    }
+
+    tick();
+  })();
+  true;
+  `;
+
+  // Polls the org-selection page until it has rendered real, interactive
+  // content (not just a spinner), then signals native via WEB_READY so the
+  // loader can be hidden without flashing a blank page. A 1500ms native
+  // fallback covers the case where this never fires.
+  const webReadyProbeScript = `
+  (function webReady() {
+    var POLL_INTERVAL = 150;
+    var MAX_WAIT = 5000;
+    var startTime = Date.now();
+
+    function hasContent() {
+      if (document.readyState !== 'complete') return false;
+      // Any rendered org card / list item / actionable control means the
+      // page has painted past its initial loading state.
+      var el =
+        document.querySelector('mat-card') ||
+        document.querySelector('[class*="organization"]') ||
+        document.querySelector('mat-list-item') ||
+        document.querySelector('button.submit-button') ||
+        document.querySelector('mat-selection-list');
+      return !!el;
+    }
+
+    function tick() {
+      if (hasContent() || Date.now() - startTime > MAX_WAIT) {
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'WEB_READY' }));
+        } catch (e) {}
+        return;
+      }
+      setTimeout(tick, POLL_INTERVAL);
+    }
+    tick();
   })();
   true;
   `;
@@ -1896,6 +2023,14 @@ function AppContent() {
   const handleMessage = async (event: any) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
+
+      // ─── WEB_READY ───────────────────────────────────────────────────────
+      // Org-selection page has rendered real content — hide the loader now
+      // (the 1500ms fallback in handleLoadEnd covers the case this never fires).
+      if (message?.type === 'WEB_READY') {
+        setLoading(false);
+        return;
+      }
 
       // ─── PDF (existing) ──────────────────────────────────────────────────
       if (message?.type === 'pdf') {
@@ -2113,13 +2248,17 @@ function AppContent() {
   true;
   `;
 
-  if (showWeb) {
-    return (
+  // WebView layer — mounted once `bootResolved`, kept mounted across the
+  // login → web transition so the Angular SPA boots (pre-warms) behind the
+  // native login screen and is never remounted (a remount discards the warm
+  // page). Hidden + non-interactive until `showWeb` reveals it.
+  const webViewLayer = bootResolved ? (
+    <View style={StyleSheet.absoluteFill} pointerEvents={showWeb ? 'auto' : 'none'}>
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
         <WebView
           ref={webRef}
           source={{ uri: initialWebUrl }}
-          style={{ flex: 1, opacity: loading ? 0 : 1 }}
+          style={{ flex: 1, opacity: showWeb && !loading ? 1 : 0 }}
           javaScriptEnabled
           domStorageEnabled
           mixedContentMode="always"
@@ -2134,7 +2273,9 @@ function AppContent() {
           onNavigationStateChange={handleNavigationStateChange}
         />
 
-        {loading && (
+        {/* Spinner during the web-side login (after reveal, before the org
+            page is ready) so the wait isn't a blank white screen. */}
+        {showWeb && loading && (
           <View style={styles.overlay}>
             <LottieView
               source={require('./src/common/Loader.json')}
@@ -2144,23 +2285,9 @@ function AppContent() {
             />
           </View>
         )}
-
-        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>No Internet</Text>
-              <Text style={styles.modalText}>
-                Please check your internet connection
-              </Text>
-              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]}>
-                <Text style={styles.buttonText}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
       </SafeAreaView>
-    );
-  }
+    </View>
+  ) : null;
 
   const renderMobileUI = () => (
     <>
@@ -2265,50 +2392,66 @@ function AppContent() {
     </>
   );
 
-  /* ================= LOGIN UI ================= */
+  /* ================= ROOT RENDER ================= */
+  // The WebView layer is always mounted (warming) behind the login UI. The
+  // login UI is rendered on top, with an opaque background, only until
+  // `showWeb` reveals the WebView.
   return (
-    <>
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: '#fff' }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-      >
-        <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-          {IS_TABLET ? (
-            <>
-              <View style={styles.header}>
-                <Text style={styles.headerTitle}>Login Here</Text>
-              </View>
-              <View style={{ flex: 1, flexDirection: 'row' }}>
-                <View style={styles.tabletLeft}>
-                  <Image
-                    source={require('./src/common/BannerLogo.png')}
-                    style={styles.tabletImage}
-                    resizeMode="contain"
-                  />
-                </View>
-                <View style={styles.tabletRight}>
-                  {renderMobileUI()}
-                </View>
-              </View>
-            </>
-          ) : (
-            renderMobileUI()
-          )}
-        </SafeAreaView>
-      </KeyboardAvoidingView>
+    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+      {webViewLayer}
 
-      {loading && (
-        <View style={styles.overlay}>
-          <LottieView
-            source={require('./src/common/Loader.json')}
-            autoPlay
-            loop
-            style={styles.lottie}
-          />
+      {!showWeb && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#fff' }]}>
+          <KeyboardAvoidingView
+            style={{ flex: 1, backgroundColor: '#fff' }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+          >
+            <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+              {IS_TABLET ? (
+                <>
+                  <View style={styles.header}>
+                    <Text style={styles.headerTitle}>Login Here</Text>
+                  </View>
+                  <View style={{ flex: 1, flexDirection: 'row' }}>
+                    <View style={styles.tabletLeft}>
+                      <Image
+                        source={require('./src/common/BannerLogo.png')}
+                        style={styles.tabletImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <View style={styles.tabletRight}>
+                      {renderMobileUI()}
+                    </View>
+                  </View>
+                </>
+              ) : (
+                renderMobileUI()
+              )}
+            </SafeAreaView>
+          </KeyboardAvoidingView>
         </View>
       )}
-    </>
+
+      {/* No-Internet modal for the web session (the login UI renders its own
+          inside renderMobileUI). Single instance avoids a duplicate modal. */}
+      {showWeb && (
+        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>No Internet</Text>
+              <Text style={styles.modalText}>
+                Please check your internet connection
+              </Text>
+              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]}>
+                <Text style={styles.buttonText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
+    </View>
   );
 }
 
