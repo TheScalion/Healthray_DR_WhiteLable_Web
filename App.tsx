@@ -1517,7 +1517,11 @@ function AppContent() {
         if ((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS) {
           perms.push((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS);
         }
-        await PermissionsAndroid.requestMultiple(perms as any);
+        const results = await PermissionsAndroid.requestMultiple(perms as any);
+        const notifPerm = (results as any)['android.permission.POST_NOTIFICATIONS'];
+        if (notifPerm && notifPerm !== 'granted') {
+          console.log('[PERMISSIONS] ⚠ POST_NOTIFICATIONS not granted:', notifPerm);
+        }
       }
     };
     requestPermissions();
@@ -1525,33 +1529,27 @@ function AppContent() {
 
   // ─── Firebase Cloud Messaging ─────────────────────────────────────────────
   useEffect(() => {
-    // Let deviceToken.ts know which backend to use
     configureApiBase(API_BASE);
 
     let unsubscribeFcm: () => void = () => { };
 
-    console.log('[FCM] initFCM → calling...');
     initFCM(async (newToken) => {
       fcmTokenRef.current = newToken;
-      console.log('[FCM] Token refreshed in ref:', newToken);
-      // Keep the auth_tokens row current without requiring re-login
       await syncDeviceToken(newToken);
     }).then(({ token, unsubscribe: unsub }) => {
       unsubscribeFcm = unsub;
       if (token) {
         fcmTokenRef.current = token;
-        console.log('[FCM] ✅ Token set in ref:', token);
+        console.log('[FCM] ✅ Token ready:', token);
       } else {
-        console.log('[FCM] ⚠ initFCM resolved with EMPTY token — check: google-services.json present? npm install done? permission granted?');
+        console.log('[FCM] ⚠ Token empty — check [FCM] logs in fcmService');
       }
     }).catch((e) => {
-      console.log('[FCM] ❌ initFCM threw error:', e);
+      console.log('[FCM] ❌ initFCM error:', e?.message ?? e);
     });
 
-    // Cold-start: token may have rotated while app was fully closed → reconcile now
     syncDeviceToken();
 
-    // Background tap: app was in background, user taps a driver-call notification
     const unsubscribeBgTap = messaging().onNotificationOpenedApp((remoteMessage: any) => {
       const type = remoteMessage?.data?.notification_type;
       if (type === 'AMBULANCE_CALL_DISPATCHED' || type === 'AMBULANCE_CALL_REASSIGNED') {
@@ -1561,14 +1559,12 @@ function AppContent() {
       }
     });
 
-    // Quit-state tap: app killed → user taps notifee notification → open driver page
     notifee.getInitialNotification().then(initial => {
       if (initial?.notification?.data?.call_id) {
         setInitialWebUrl(`${WEB_BASE}/ambulance/driver`);
       }
     });
 
-    // Foreground tap: user taps the notifee notification while app is open
     const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
       if (type === EventType.PRESS && detail.notification?.data?.call_id) {
         webRef.current?.injectJavaScript(`window.location.href = '/ambulance/driver'; true;`);
@@ -1850,78 +1846,12 @@ function AppContent() {
       return;
     }
 
-    // Doctor + Production: call native sign_in API to obtain HRMS tracking tokens.
+    // Doctor + Production: reveal the pre-warmed WebView and start the web-side
+    // login immediately. The web login uses the typed credentials directly and
+    // does NOT depend on the native sign_in response — so the native call (FCM
+    // token + HRMS tokens) runs in the background, off the critical path.
     try {
-      const passwordPayload = JSON.stringify({
-        text: password,
-        time: convertLocalTimeToUtcTime(),
-      });
-      const encryptedPassword = encryptText(passwordPayload);
-
-      // Always call getToken() directly — guaranteed to return the current
-      // valid token even after a clean rebuild (ref/AsyncStorage may be stale).
-      let fcmToken = '';
-      try {
-        fcmToken = await messaging().getToken();
-        if (fcmToken) {
-          fcmTokenRef.current = fcmToken;
-          console.log(`${TAG} → FCM device_token (fresh): ${fcmToken}`);
-        } else {
-          console.log(`${TAG} → FCM device_token: EMPTY — getToken() returned null`);
-        }
-      } catch (e) {
-        console.log(`${TAG} → FCM getToken() error:`, e);
-      }
-
-      const payload = {
-        user: {
-          mobile_no: mobileNo,
-          password: encryptedPassword,
-          platform: Platform.OS === "android" ? "Android" : "iOS",
-          user_type: userType,
-        },
-      };
-
-      console.log(`${TAG} → Path: Native API | URL: ${SIGN_IN_URL}`);
-      console.log(`${TAG} → Payload:`, JSON.stringify(payload));
-
-
-      const res = await fetch(SIGN_IN_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          'X-Device-Token': fcmToken,
-          'X-Platform': Platform.OS === 'ios' ? 'iOS' : 'Android',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      console.log(`${TAG} ← API status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message ?? '—'}`);
-      console.log("===============>", data)
-
-      if (!res.ok || data?.statusState !== "success") {
-        console.log(`${TAG} ✗ FAILED — status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message}`);
-        Alert.alert("Login Failed", data?.message || "Unable to sign in");
-        setLoading(false);
-        return;
-      }
-
-      // Persist auth tokens so the HRMS tracker can attach them to every
-      // /tracking/* request without going through the WebView.
-      const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
-      const isDriver: boolean = !!(
-        data?.data?.isDriver ??
-        data?.isDriver ??
-        (data?.data?.user_type?.toLowerCase() === 'driver')
-      );
-      console.log(`${TAG} [FCM] isDriver=${isDriver} | raw fields → data.isDriver=${data?.data?.isDriver} data.user_type=${data?.data?.user_type}`);
-      console.log(`${TAG} [FCM] user_role will be set to: "${isDriver ? 'driver' : 'staff'}"`);
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, 'true');
-      // rememberSession saves auth_token, device_token=native FCM token, user_role
-      await rememberSession(authToken, isDriver, fcmToken);
-
       isFirstWebLoadRef.current = true;
 
       const fillScript = buildAutoFillScript(mobileNo, password, userType);
@@ -1940,7 +1870,7 @@ function AppContent() {
       loginTimeoutRef.current = setTimeout(async () => {
         const currentUrl = lastWebUrlRef.current;
         if (!currentUrl || currentUrl.includes("/login")) {
-          console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login after API success | lastUrl: ${currentUrl}`);
+          console.log(`${TAG} ✗ TIMEOUT (55s) — WebView still on login | lastUrl: ${currentUrl}`);
           loginPageReady.current = false;
           pendingAutoFill.current = null;
           await AsyncStorage.multiRemove([
@@ -1958,6 +1888,86 @@ function AppContent() {
           );
         }
       }, 55000);
+
+      // Background: native sign_in for HRMS tokens + FCM registration. Not awaited.
+      (async () => {
+        try {
+          const passwordPayload = JSON.stringify({
+            text: password,
+            time: convertLocalTimeToUtcTime(),
+          });
+          const encryptedPassword = encryptText(passwordPayload);
+
+          let fcmToken = '';
+          try {
+            fcmToken = await messaging().getToken();
+            if (fcmToken) fcmTokenRef.current = fcmToken;
+          } catch (e) {
+            console.log(`${TAG} → FCM getToken() error:`, e);
+          }
+          console.log(`${TAG} → device_token:`, fcmToken ? fcmToken : 'EMPTY');
+
+          const payload = {
+            user: {
+              mobile_no: mobileNo,
+              password: encryptedPassword,
+              platform: Platform.OS === "android" ? "Android" : "iOS",
+              user_type: userType,
+            },
+          };
+
+          const res = await fetch(SIGN_IN_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              device_token: fcmToken,
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await res.json();
+          console.log(`${TAG} ← API status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message ?? '—'}`);
+
+          if (!res.ok || data?.statusState !== "success") {
+            console.log(`${TAG} ✗ FAILED — status: ${res.status} | statusState: ${data?.statusState} | message: ${data?.message}`);
+            // Only tear down if the web login hasn't already succeeded (reached
+            // /select-organization) — a native hiccup shouldn't kill a good session.
+            if (!wasLoggedInRef.current) {
+              if (loginTimeoutRef.current) {
+                clearTimeout(loginTimeoutRef.current);
+                loginTimeoutRef.current = null;
+              }
+              loginPageReady.current = false;
+              pendingAutoFill.current = null;
+              await AsyncStorage.multiRemove([
+                STORAGE_KEYS.IS_LOGGED_IN,
+                STORAGE_KEYS.SAVE_WEB_URL,
+                TRACKING_STORAGE.AUTH_TOKEN,
+                TRACKING_STORAGE.DEVICE_TOKEN,
+              ]);
+              setShowWeb(false);
+              setLoading(false);
+              Alert.alert("Login Failed", data?.message || "Unable to sign in");
+            }
+            return;
+          }
+
+          // Persist auth tokens so the HRMS tracker can attach them to every
+          // /tracking/* request without going through the WebView.
+          const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
+          const isDriver: boolean = !!(
+            data?.data?.isDriver ??
+            data?.isDriver ??
+            (data?.data?.user_type?.toLowerCase() === 'driver')
+          );
+          console.log(`${TAG} [FCM] isDriver=${isDriver} | user_role: "${isDriver ? 'driver' : 'staff'}"`);
+          // rememberSession saves auth_token, device_token=native FCM token, user_role
+          await rememberSession(authToken, isDriver, fcmToken);
+        } catch (e: any) {
+          console.log(`${TAG} ✗ native sign_in (background) CATCH — ${e?.message}`, e);
+        }
+      })();
     } catch (e: any) {
       console.log(`${TAG} ✗ CATCH — ${e?.message}`, e);
       Alert.alert("Login Failed", e.message || "Something went wrong. Please try again.");
@@ -1977,7 +1987,10 @@ function AppContent() {
       }
     }
     if (url.includes("/select-organization")) {
-      setTimeout(() => setLoading(false), 200);
+      // Hide the loader as soon as the org page paints (WEB_READY), with a
+      // fixed fallback so a slow render never reveals a blank page.
+      webRef.current?.injectJavaScript(webReadyProbeScript);
+      setTimeout(() => setLoading(false), 1500);
     }
   };
 
@@ -1995,7 +2008,10 @@ function AppContent() {
         clearTimeout(loginTimeoutRef.current);
         loginTimeoutRef.current = null;
       }
-      setTimeout(() => setLoading(false), 200);
+      // SPA route change (pushState) fires here, not onLoadEnd — hide the loader
+      // on WEB_READY with a fixed fallback.
+      webRef.current?.injectJavaScript(webReadyProbeScript);
+      setTimeout(() => setLoading(false), 1500);
 
       // Invitee login never calls the native sign_in API, so the FCM token was
       // never sent to the backend. Inject JS here to read the web session's auth
@@ -2059,6 +2075,41 @@ function AppContent() {
     true;
   `;
 
+  // Polls the org-selection page until it has rendered real, interactive
+  // content (not just a spinner), then signals native via WEB_READY so the
+  // loader can be hidden the moment content paints — without a blank flash.
+  // A fixed fallback in the load handlers covers the case this never fires.
+  const webReadyProbeScript = `
+  (function webReady() {
+    var POLL_INTERVAL = 150;
+    var MAX_WAIT = 5000;
+    var startTime = Date.now();
+
+    function hasContent() {
+      if (document.readyState !== 'complete') return false;
+      var el =
+        document.querySelector('mat-card') ||
+        document.querySelector('[class*="organization"]') ||
+        document.querySelector('mat-list-item') ||
+        document.querySelector('button.submit-button') ||
+        document.querySelector('mat-selection-list');
+      return !!el;
+    }
+
+    function tick() {
+      if (hasContent() || Date.now() - startTime > MAX_WAIT) {
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'WEB_READY' }));
+        } catch (e) {}
+        return;
+      }
+      setTimeout(tick, POLL_INTERVAL);
+    }
+    tick();
+  })();
+  true;
+  `;
+
   // Builds the auto-fill injection script with actual credential values baked in.
   // Called at login time (not at render time) so values are always fresh.
   const buildAutoFillScript = (mobile: string, pass: string, uType: string): string => {
@@ -2067,56 +2118,89 @@ function AppContent() {
     const safeUserType = JSON.stringify(uType);
     return `
   (function autoLogin() {
-    let attemptCount = 0;
-    const maxAttempts = 3;
-    const retryDelay = 3000;
-    const clickDelay = 400;
+    var mobileNo = ${safeMobile};
+    var password = ${safePassword};
+    var verificationType = ${safeUserType};
 
-    function performClick() {
-      if (attemptCount >= maxAttempts) {
-        console.log('🛑 Max login attempts reached');
-        return;
-      }
-      const url = window.location.href;
-      if (!url.includes('/login')) return;
+    // Nothing to fill — bail (defensive; always called with credentials).
+    if (!mobileNo || !password) return;
 
-      const mobileInput = document.getElementById('mobile_no');
-      const passwordInput =
-        document.querySelector('#mat-input-1') ||
-        document.querySelector('input[type="password"]');
-      const loginButton = document.querySelector('button.submit-button');
-      const doctorButton = document.getElementById('mat-button-toggle-1-button');
-      const staffButton = document.getElementById('mat-button-toggle-2-button');
+    var POLL_INTERVAL = 250;     // re-check form readiness ~4x/sec
+    var MAX_WAIT = 30000;        // worst-case SPA ceiling, under the native 55s timeout
+    var maxAttempts = 3;
+    var retryDelay = 3000;       // wait after a click before retrying if still on /login
 
-      const verificationType = ${safeUserType};
+    var startTime = Date.now();
+    var attemptCount = 0;
+    var submitted = false;
+    var typeSelected = false;
+
+    function selectUserType() {
+      var doctorButton = document.getElementById('mat-button-toggle-1-button');
+      var staffButton = document.getElementById('mat-button-toggle-2-button');
       if (verificationType.toLowerCase() === 'invitee') {
         if (staffButton) staffButton.click();
       } else {
         if (doctorButton) doctorButton.click();
       }
-
-      if (mobileInput && passwordInput && loginButton && !loginButton.disabled) {
-        mobileInput.value = ${safeMobile};
-        mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
-        passwordInput.value = ${safePassword};
-        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-        setTimeout(() => {
-          loginButton.click();
-          attemptCount++;
-          if (attemptCount < maxAttempts) {
-            setTimeout(performClick, retryDelay);
-          }
-        }, clickDelay);
-      } else {
-        // Elements not ready yet — retry shortly
-        attemptCount++;
-        if (attemptCount < maxAttempts) {
-          setTimeout(performClick, 1000);
-        }
-      }
     }
-    setTimeout(performClick, 300);
+
+    function tick() {
+      if (submitted) return;
+      if (Date.now() - startTime > MAX_WAIT) {
+        console.log('🛑 autoLogin: form not ready before MAX_WAIT');
+        return;
+      }
+      if (!window.location.href.includes('/login')) return;
+      if (attemptCount >= maxAttempts) {
+        console.log('🛑 autoLogin: max attempts reached');
+        return;
+      }
+
+      var mobileInput = document.getElementById('mobile_no');
+      var passwordInput =
+        document.querySelector('#mat-input-1') ||
+        document.querySelector('input[type="password"]');
+      var loginButton = document.querySelector('button.submit-button');
+
+      // Form not rendered yet — keep polling instead of giving up.
+      if (!mobileInput || !passwordInput || !loginButton) {
+        setTimeout(tick, POLL_INTERVAL);
+        return;
+      }
+
+      // Select the doctor/staff toggle once, before filling.
+      if (!typeSelected) {
+        selectUserType();
+        typeSelected = true;
+      }
+
+      mobileInput.value = mobileNo;
+      mobileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      passwordInput.value = password;
+      passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Button may still be disabled until Angular validates — re-tick (re-filling
+      // the same value is harmless).
+      if (loginButton.disabled) {
+        setTimeout(tick, POLL_INTERVAL);
+        return;
+      }
+
+      loginButton.click();
+      submitted = true;
+      attemptCount++;
+
+      // If still on /login after retryDelay, the submit didn't take — retry.
+      setTimeout(function () {
+        if (window.location.href.includes('/login') && attemptCount < maxAttempts) {
+          submitted = false;
+          tick();
+        }
+      }, retryDelay);
+    }
+
+    tick();
   })();
   true;
     `;
@@ -2187,6 +2271,14 @@ function AppContent() {
   const handleMessage = async (event: any) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
+
+      // ─── WEB_READY ───────────────────────────────────────────────────────
+      // Org-selection page rendered real content — hide the loader now (the
+      // 1500ms fallback in the load handlers covers the case this never fires).
+      if (message?.type === 'WEB_READY') {
+        setLoading(false);
+        return;
+      }
 
       // ─── PDF (existing) ──────────────────────────────────────────────────
       if (message?.type === 'pdf') {
