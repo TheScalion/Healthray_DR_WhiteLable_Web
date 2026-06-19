@@ -10,10 +10,16 @@ import { syncDeviceToken } from './src/services/deviceToken';
 import App from './App';
 import { name as appName } from './app.json';
 
-// Fires for DATA-ONLY messages when app is background/killed.
-// Notification messages (title+body) are shown by OS automatically — this won't fire for those.
 messaging().setBackgroundMessageHandler(async remoteMessage => {
-  console.log('[FCM][BACKGROUND] data:', JSON.stringify(remoteMessage?.data ?? {}));
+  // When backend sends a message with BOTH notification + data fields,
+  // the OS already shows the notification automatically (one banner).
+  // If we also call showCallNotification here, the user sees TWO banners.
+  // Fix: only handle data-only messages — skip if notification key is present.
+  if (remoteMessage.notification) {
+    console.log('[FCM][BACKGROUND] notification+data message — OS already displayed it, skipping to avoid duplicate');
+    return;
+  }
+  console.log('[FCM][BACKGROUND] data-only message — data:', JSON.stringify(remoteMessage?.data ?? {}));
   await showCallNotification(remoteMessage);
 });
 

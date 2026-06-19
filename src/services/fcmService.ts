@@ -50,13 +50,22 @@ export async function initFCM(onTokenRefresh?: FCMTokenRefreshCallback): Promise
 
     const unsubscribeForeground = messaging().onMessage(async (remoteMessage: any) => {
       const { notification, data } = remoteMessage;
-      console.log('[FCM][FOREGROUND] title:', notification?.title ?? '(none)', '| data:', JSON.stringify(data ?? {}));
+      const notifType: string = data?.notification_type ?? '';
+      console.log('[FCM][FOREGROUND] title:', notification?.title ?? '(none)', '| type:', notifType || '(none)');
 
-      if (!notification) {
+      // Ambulance driver-call messages always use showCallNotification so they
+      // get the emergency_calls channel, fullScreenAction, and CALL category styling.
+      // This handles both data-only and notification+data variants from the backend.
+      const isCallMessage =
+        notifType === 'AMBULANCE_CALL_DISPATCHED' ||
+        notifType === 'AMBULANCE_CALL_REASSIGNED';
+
+      if (isCallMessage || !notification) {
         await showCallNotification(remoteMessage);
         return;
       }
 
+      // Regular notification message (general push, not a driver call)
       try {
         await notifee.displayNotification({
           title: notification.title ?? 'HealthRay',

@@ -1533,9 +1533,11 @@ function AppContent() {
 
     let unsubscribeFcm: () => void = () => { };
 
-    initFCM(async (newToken) => {
+    initFCM((newToken) => {
+      // Only update the in-memory ref here.
+      // syncDeviceToken is handled exclusively by index.js onTokenRefresh
+      // so we never fire two concurrent refresh_token API calls for the same rotation.
       fcmTokenRef.current = newToken;
-      await syncDeviceToken(newToken);
     }).then(({ token, unsubscribe: unsub }) => {
       unsubscribeFcm = unsub;
       if (token) {
@@ -1554,20 +1556,20 @@ function AppContent() {
       const type = remoteMessage?.data?.notification_type;
       if (type === 'AMBULANCE_CALL_DISPATCHED' || type === 'AMBULANCE_CALL_REASSIGNED') {
         setTimeout(() => {
-          webRef.current?.injectJavaScript(`window.location.href = '/ambulance/driver'; true;`);
+          webRef.current?.injectJavaScript(`window.location.href = '/ambulance'; true;`);
         }, 500);
       }
     });
 
     notifee.getInitialNotification().then(initial => {
       if (initial?.notification?.data?.call_id) {
-        setInitialWebUrl(`${WEB_BASE}/ambulance/driver`);
+        setInitialWebUrl(`${WEB_BASE}/ambulance`);
       }
     });
 
     const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
       if (type === EventType.PRESS && detail.notification?.data?.call_id) {
-        webRef.current?.injectJavaScript(`window.location.href = '/ambulance/driver'; true;`);
+        webRef.current?.injectJavaScript(`window.location.href = '/ambulance'; true;`);
       }
     });
 
@@ -1986,11 +1988,18 @@ function AppContent() {
         setTimeout(() => webRef.current?.injectJavaScript(script), 100);
       }
     }
-    if (url.includes("/select-organization")) {
-      // Hide the loader as soon as the org page paints (WEB_READY), with a
-      // fixed fallback so a slow render never reveals a blank page.
+    // A doctor with multiple orgs lands on /select-organization; a doctor who
+    // belongs to a single org skips that page and lands straight on the main
+    // app (e.g. /patients?mode=Offline&organization=626). Treat both as the
+    // post-login destination and hide the loader.
+    if (url.includes("/select-organization") || url.includes("/patients")) {
+      // Hide the loader as soon as the page actually paints (WEB_READY). The
+      // fallback is a last resort for a lost WEB_READY message — kept above the
+      // probe's own 5s ceiling so it never fires mid-transition and flashes the
+      // login page on the heavier /patients home screen. On the happy path the
+      // probe hides the loader first, so this timer is a no-op.
       webRef.current?.injectJavaScript(webReadyProbeScript);
-      setTimeout(() => setLoading(false), 1500);
+      setTimeout(() => setLoading(false), 6000);
     }
   };
 
@@ -2000,7 +2009,10 @@ function AppContent() {
 
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
-    if (url.includes("/select-organization")) {
+    // A multi-org doctor lands on /select-organization; a single-org doctor
+    // skips it and lands straight on the main app (e.g. /patients?...). Both
+    // mean login succeeded, so persist the logged-in state for either.
+    if (url.includes("/select-organization") || url.includes("/patients")) {
       wasLoggedInRef.current = true;
       await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
 
@@ -2009,15 +2021,16 @@ function AppContent() {
         loginTimeoutRef.current = null;
       }
       // SPA route change (pushState) fires here, not onLoadEnd — hide the loader
-      // on WEB_READY with a fixed fallback.
+      // on WEB_READY. The fallback is a last resort kept above the probe's 5s
+      // ceiling so it never fires mid-transition and flashes the login page.
       webRef.current?.injectJavaScript(webReadyProbeScript);
-      setTimeout(() => setLoading(false), 1500);
+      setTimeout(() => setLoading(false), 6000);
 
       // Invitee login never calls the native sign_in API, so the FCM token was
       // never sent to the backend. Inject JS here to read the web session's auth
       // tokens from localStorage, which are posted back via WEB_AUTH_TOKENS so
       // native can call the backend FCM-registration endpoint.
-      console.log('[NAV] /select-organization reached | loginType:', loginTypeRef.current);
+      console.log('[NAV] post-login page reached | loginType:', loginTypeRef.current);
       if (loginTypeRef.current === 'Invitee') {
         console.log('[NAV] Injecting WEB_AUTH_TOKENS extraction script for Invitee');
         setTimeout(() => {
@@ -2087,12 +2100,30 @@ function AppContent() {
 
     function hasContent() {
       if (document.readyState !== 'complete') return false;
+
+      // Login page is still mounted (mid-transition) — NOT ready. The login
+      // submit button shares the 'button.submit-button' selector, so without
+      // this guard the probe fires WEB_READY against the login DOM and the
+      // loader lifts to reveal the login page (single-org doctors skip the
+      // org page and hit this transition directly).
+      var onLoginPage =
+        document.getElementById('mobile_no') ||
+        document.getElementById('mat-button-toggle-1-button') ||
+        document.getElementById('mat-button-toggle-2-button');
+      if (onLoginPage) return false;
+
       var el =
+        // Org-selection page
         document.querySelector('mat-card') ||
         document.querySelector('[class*="organization"]') ||
         document.querySelector('mat-list-item') ||
-        document.querySelector('button.submit-button') ||
-        document.querySelector('mat-selection-list');
+        document.querySelector('mat-selection-list') ||
+        // Main app shell (single-org doctors land straight on /patients)
+        document.querySelector('mat-toolbar') ||
+        document.querySelector('mat-sidenav-container') ||
+        document.querySelector('mat-sidenav') ||
+        document.querySelector('[class*="sidebar"]') ||
+        document.querySelector('table');
       return !!el;
     }
 
