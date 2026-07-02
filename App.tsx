@@ -33,7 +33,7 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
 
 
-const LOGIN_URL = "https://ray.heritageimshospital.com/login";
+const LOGIN_URL = "https://ray.theheritagehospitals.com/login";
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -47,12 +47,12 @@ const IS_TABLET = width >= 768;
 
 
 
-const BASE_URL = 'https://heritagenode.healthray.com/api/v2/';
-const BASE_URL1 = 'https://node.heritageimshospital.com/api/v2/';
+const BASE_URL = 'https://node.theheritagehospitals.com/api/v2/';
+const BASE_URL1 = 'https://node.theheritagehospitals.com/api/v2/';
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
-const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.heritage.doctor&hl=en_IN';
+const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.heritage.doctor.noida&hl=en_IN';
 
 
 export default function App() {
@@ -80,8 +80,8 @@ function AppContent() {
   const [showWeb, setShowWeb] = useState(false);
   const [webKey, setWebKey] = useState(0);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState("");
-  const [password, setPassword] = useState("");
+  const [mobileNo, setMobileNo] = useState("1234567890");
+  const [password, setPassword] = useState("Dhara@123");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -381,7 +381,7 @@ function AppContent() {
 
       // API call
       const res = await fetch(
-        "https://node.heritageimshospital.com/api/v1/users/sign_in",
+        "https://node.theheritagehospitals.com/api/v1/users/sign_in",
         {
           method: "POST",
           headers: {

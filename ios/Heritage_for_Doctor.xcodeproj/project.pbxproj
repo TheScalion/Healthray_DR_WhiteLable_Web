@@ -277,7 +277,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.healthray.doctor;
+				PRODUCT_BUNDLE_IDENTIFIER = com.heritage.doctor.noida;
 				PRODUCT_NAME = Heritage_for_Doctor;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -313,7 +313,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.healthray.doctor;
+				PRODUCT_BUNDLE_IDENTIFIER = com.heritage.doctor.noida;
 				PRODUCT_NAME = Heritage_for_Doctor;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = Dist_HealthrayDoctorLive;

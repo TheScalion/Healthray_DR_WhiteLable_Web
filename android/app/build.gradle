@@ -78,9 +78,17 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
+    // NDK 27 removed the `gold` linker; CMake 3.22.1's LTO check still passes
+    // `-fuse-ld=gold` and fails. CMake >= 3.28 uses lld, so pin a newer CMake.
+    externalNativeBuild {
+        cmake {
+            version "3.31.6"
+        }
+    }
+
     namespace "com.heritage_for_doctor"
     defaultConfig {
-        applicationId "com.heritage.doctor"
+        applicationId "com.heritage.doctor.noida"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 10
