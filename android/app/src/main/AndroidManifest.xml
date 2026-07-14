@@ -32,6 +32,18 @@
     <!-- Boot receiver — restart WorkManager health check and resume session after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- ===== Android TV support ===== -->
+    <!-- Declare hardware as NOT required so the app installs on TV (which has no
+         touchscreen/GPS/camera). Without required="false" the installer filters the app out. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Leanback = the Android TV UI toolkit; software.leanback not required keeps phone installs working -->
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
     <application
       android:name=".MainApplication"
       android:label="@string/app_name"
@@ -55,6 +67,8 @@
         <intent-filter>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+            <!-- Makes the app appear on the Android TV home screen -->
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
         </intent-filter>
 
       </activity>
