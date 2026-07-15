@@ -84,8 +84,8 @@ android {
         applicationId "com.healthray.doctor"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 146
-        versionName "4.5"
+        versionCode 147
+        versionName "4.6"
     }
     signingConfigs {
         debug {

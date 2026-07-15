@@ -1,5 +1,5 @@
 import 'react-native-get-random-values';
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import messaging from '@react-native-firebase/messaging';
 import notifee, { EventType } from '@notifee/react-native';
 import { initFCM, getFCMToken } from './src/services/fcmService';
@@ -26,6 +26,7 @@ import {
   AppState,
   ToastAndroid,
   DeviceEventEmitter,
+  BackHandler,
 } from "react-native";
 
 const { BatteryOptimization } = NativeModules;
@@ -96,6 +97,7 @@ const isLoginSuccessUrl = (url: string): boolean => {
 const isKnownPostLoginUrl = (url: string): boolean => {
   if (!url) return false;
   const u = url.toLowerCase();
+  console.log('[isKnownPostLoginUrl] checking', u);
   if (u.includes('/login')) return false;
   return POST_LOGIN_URL_HINTS.some((hint) => u.includes(hint));
 };
@@ -1460,16 +1462,15 @@ function AppContent() {
   const webRef = useRef<WebViewType>(null);
 
   const wasLoggedInRef = useRef(false);
-  const isFirstWebLoadRef = useRef(true);
   const lastWebUrlRef = useRef<string>('');
   const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loginPageReady = useRef(false);
-  const pendingAutoFill = useRef<string | null>(null);
+  const postLoginFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null); // hidePostLoginLoader's 1500ms fallback
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
   const loginPageReadyRef = useRef(false);   // /login DOM has loaded (pre-warm may set early)
-  const pendingAutoFillRef = useRef(false);  // tapped before ready → flush on load
   const loginInProgressRef = useRef(false);  // a login is awaiting its web result
+  const autofillRetryRef = useRef(0);        // reloads done after AUTOFILL_FORM_NOT_FOUND (max 1)
+  const canGoBackRef = useRef(false);        // WebView has history (for Android hardware back)
   const webErroredRef = useRef(false);       // WebView had a load error → reload on reconnect
   const loginStartRef = useRef<number>(0);   // ms timestamp of Login press (for elapsed-time logs)
   const prewarmStartRef = useRef<number>(0); // ms timestamp pre-warm began (WebView mounted at /login)
@@ -1487,6 +1488,10 @@ function AppContent() {
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Staged status line under the loader ("Signing you in…" → "Loading your
+  // workspace…") so the long single-org bootstrap (~40s measured) reads as
+  // progress instead of a frozen animation.
+  const [loadingStatus, setLoadingStatus] = useState('');
   const [preWarmMode, setPreWarmMode] = useState(false);
   const [mobileNoError, setMobileNoError] = useState<string | null>(null);
   const [netInfoReady, setNetInfoReady] = useState(false);
@@ -1639,6 +1644,14 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Login timers must not outlive the component (setState after unmount).
+  useEffect(() => {
+    return () => {
+      if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+      if (postLoginFallbackRef.current) clearTimeout(postLoginFallbackRef.current);
+    };
+  }, []);
+
   // App foreground → drain HRMS buffer immediately
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextAppState) => {
@@ -1678,6 +1691,10 @@ function AppContent() {
         ]).catch(() => { });
         wasLoggedInRef.current = false;
         setShowWeb(false);
+        // Keep the WebView mounted so the next Login press has a live webRef
+        // (same reasoning as the logout path in handleNavigationStateChange).
+        setPreWarmMode(true);
+        setLoading(false);
       }
     });
 
@@ -1790,13 +1807,135 @@ function AppContent() {
   };
 
   // Elapsed-time login logger → "[LOGIN +123ms] message" (ms since Login press).
-  const logLogin = (msg: string, extra?: any) => {
+  const logLogin = useCallback((msg: string, extra?: any) => {
     const t = loginStartRef.current ? `+${Date.now() - loginStartRef.current}ms` : 'start';
     if (extra !== undefined) console.log(`[LOGIN ${t}] ${msg}`, extra);
     else console.log(`[LOGIN ${t}] ${msg}`);
+  }, []);
+
+  // ─── Login watchdog + failure teardown ──────────────────────────────────────
+  // Component scope (not closures inside handleLogin) because the WebView
+  // message handlers (AUTOFILL_FORM_NOT_FOUND, WEB_LOGIN_ERROR) drive them too.
+  const FIRST_CHECK_MS = 55000;
+  const RECHECK_MS = 15000;
+  const ABSOLUTE_MAX_MS = 180000; // 3 min hard ceiling even when creds are valid
+
+  // A finished attempt (failure or logout) can leave the still-alive /login
+  // page (SPA — nothing reloads it) with __hrAutoLoginSubmitted /
+  // __hrAutoFillPolling set, which would make the NEXT attempt's injection
+  // bail out at its guards and never fill. Reset them at attempt boundaries;
+  // within one attempt the guards still dedupe the multiple injection points.
+  const resetAutoFillPageFlags = useCallback(() => {
+    webRef.current?.injectJavaScript(
+      'window.__hrAutoLoginSubmitted = false; window.__hrAutoFillPolling = false; true;'
+    );
+  }, []);
+
+  const failLogin = useCallback(async (message?: string, silent = false) => {
+    if (!loginInProgressRef.current) return; // already failed or already succeeded
+    logLogin(silent ? '⎋ login cancelled — tearing down (silent)' : '✗ login failed — tearing down');
+    loginInProgressRef.current = false;
+    autofillRetryRef.current = 0;
+    resetAutoFillPageFlags();
+    // If the (still-mounted, hidden) WebView drifted off /login — e.g. a login
+    // that actually landed after we tore down — steer it back so the next
+    // attempt has a login form to fill. If the web session survived, /login
+    // redirects straight to a post-login page and the retry succeeds instantly.
+    if (lastWebUrlRef.current && !lastWebUrlRef.current.includes('/login')) {
+      webRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(LOGIN_URL)}); true;`
+      );
+    }
+    await AsyncStorage.multiRemove([
+      STORAGE_KEYS.IS_LOGGED_IN,
+      STORAGE_KEYS.SAVE_WEB_URL,
+      TRACKING_STORAGE.AUTH_TOKEN,
+      TRACKING_STORAGE.DEVICE_TOKEN,
+    ]);
+    wasLoggedInRef.current = false;
+    setShowWeb(false);
+    setLoading(false);
+    if (!silent) {
+      Alert.alert(
+        "Login Failed",
+        message ??
+        "Something went wrong. Please try again or check your internet connection."
+      );
+    }
+  }, [logLogin, resetAutoFillPageFlags]);
+
+  const scheduleWatchdog = (delay: number) => {
+    if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
+    loginTimeoutRef.current = setTimeout(async () => {
+      const currentUrl = lastWebUrlRef.current;
+      const elapsed = Date.now() - loginStartRef.current;
+      // Already left /login → normally handleNavigationStateChange finalized
+      // the login and cleared loginInProgressRef. If it is somehow still set
+      // (nav event raced/missed), finalize success HERE instead of returning
+      // silently — a bare return would leave the loader up with no exit left.
+      if (currentUrl && !currentUrl.includes("/login")) {
+        if (loginInProgressRef.current) {
+          logLogin('watchdog: URL left /login but success never finalized — finalizing now', {
+            currentUrl,
+          });
+          loginInProgressRef.current = false;
+          autofillRetryRef.current = 0;
+          wasLoggedInRef.current = true;
+          hidePostLoginLoader();
+          try {
+            await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
+          } catch { }
+        } else {
+          // Success was already handled elsewhere — but if the loader is
+          // somehow still up (hide path raced or threw), drop it now. This is
+          // the last line of defense; a no-op when the loader is already gone.
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (nativeAuthOkRef.current && elapsed < ABSOLUTE_MAX_MS) {
+        logLogin('web login slow but credentials valid — still waiting', {
+          elapsedMs: elapsed,
+        });
+        scheduleWatchdog(RECHECK_MS);
+        return;
+      }
+      logLogin('⏱ watchdog: giving up', {
+        elapsedMs: elapsed,
+        nativeAuthOk: nativeAuthOkRef.current,
+      });
+      await failLogin();
+    }, delay);
   };
 
+  // Android hardware back → step back through WebView history instead of
+  // exiting the app; falls through to the default (exit) when there is none.
+  // (Placed after failLogin — it appears in the dependency array.)
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // Back during an in-flight login = cancel it and return to the native
+      // login screen, instead of exiting the app from behind the loader.
+      if (loginInProgressRef.current) {
+        logLogin('⎋ back pressed during login — cancelling');
+        if (loginTimeoutRef.current) {
+          clearTimeout(loginTimeoutRef.current);
+          loginTimeoutRef.current = null;
+        }
+        failLogin(undefined, true);
+        return true;
+      }
+      if (showWeb && canGoBackRef.current && webRef.current) {
+        webRef.current.goBack();
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [showWeb, failLogin, logLogin]);
+
   const handleLogin = async () => {
+    if (loginInProgressRef.current) return; // double-tap → one flow only
     if (!mobileNo || !password) {
       Alert.alert("Error", "Enter mobile number & password");
       return;
@@ -1817,10 +1956,11 @@ function AppContent() {
     });
 
     setLoading(true);
+    setLoadingStatus('Signing you in…');
     Keyboard.dismiss();
 
-    isFirstWebLoadRef.current = true;
     loginInProgressRef.current = true;
+    autofillRetryRef.current = 0;
     setInitialWebUrl(LOGIN_URL);
     setShowWeb(true);
 
@@ -1829,6 +1969,11 @@ function AppContent() {
     if (userType === 'Invitee' || IS_STAGING) {
       nativeAuthOkRef.current = true;
     }
+
+    // Arm the watchdog BEFORE anything that can throw (the injections below hit
+    // the native WebView bridge). Invariant: once the loader is visible, a
+    // watchdog exists — otherwise a throw here would leave it up forever.
+    scheduleWatchdog(FIRST_CHECK_MS);
 
     // Inject the auto-fill IMMEDIATELY, whether or not the page reports "ready".
     // The script polls for the form itself, so it fills + submits the moment the
@@ -1840,59 +1985,39 @@ function AppContent() {
     // a fallback, and the window.__hrAutoLoginSubmitted guard prevents any
     // double-submit across the two injection points.
     const fillScript = buildAutoFillScript(mobileNo, password, userType);
-    logLogin(
-      loginPageReadyRef.current
-        ? 'page warm → injecting auto-fill NOW'
-        : 'page NOT ready → injecting auto-fill anyway (script self-polls for the form)',
-    );
-    webRef.current?.injectJavaScript(fillScript);
-
-    const FIRST_CHECK_MS = 55000;
-    const RECHECK_MS = 15000;
-    const ABSOLUTE_MAX_MS = 180000; // 3 min hard ceiling even when creds are valid
-
-    const failLogin = async () => {
-      logLogin('✗ login failed — tearing down');
-      loginInProgressRef.current = false;
-      pendingAutoFillRef.current = false;
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.IS_LOGGED_IN,
-        STORAGE_KEYS.SAVE_WEB_URL,
-        TRACKING_STORAGE.AUTH_TOKEN,
-        TRACKING_STORAGE.DEVICE_TOKEN,
-      ]);
-      wasLoggedInRef.current = false;
-      setShowWeb(false);
-      setLoading(false);
-      Alert.alert(
-        "Login Failed",
-        "Something went wrong. Please try again or check your internet connection."
-      );
-    };
-
-    const scheduleWatchdog = (delay: number) => {
-      if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
-      loginTimeoutRef.current = setTimeout(async () => {
-        const currentUrl = lastWebUrlRef.current;
-        const elapsed = Date.now() - loginStartRef.current;
-        // Already left /login → success is handled by handleNavigationStateChange.
-        if (currentUrl && !currentUrl.includes("/login")) return;
-
-        if (nativeAuthOkRef.current && elapsed < ABSOLUTE_MAX_MS) {
-          logLogin('web login slow but credentials valid — still waiting', {
-            elapsedMs: elapsed,
-          });
-          scheduleWatchdog(RECHECK_MS);
-          return;
-        }
-        logLogin('⏱ watchdog: giving up', {
-          elapsedMs: elapsed,
-          nativeAuthOk: nativeAuthOkRef.current,
+    const offLoginPage =
+      !!lastWebUrlRef.current && !lastWebUrlRef.current.includes('/login');
+    try {
+      if (webRef.current && offLoginPage) {
+        // The WebView drifted off /login (e.g. a previous attempt's late success
+        // parked it on a post-login page). Injecting the poller there would just
+        // exit ("not on /login"). Steer back first; PREWARM_FORM_READY/onLoadEnd
+        // inject the auto-fill once the login form (re)appears — and if the web
+        // session is still alive, /login redirects straight to a post-login URL
+        // and the success path hides the loader immediately.
+        logLogin('webview off /login → steering back to login page first', {
+          at: lastWebUrlRef.current,
         });
-        await failLogin();
-      }, delay);
-    };
-    scheduleWatchdog(FIRST_CHECK_MS);
+        webRef.current.injectJavaScript(
+          `window.location.replace(${JSON.stringify(LOGIN_URL)}); true;`
+        );
+      } else if (webRef.current) {
+        logLogin(
+          loginPageReadyRef.current
+            ? 'page warm → injecting auto-fill NOW'
+            : 'page NOT ready → injecting auto-fill anyway (script self-polls for the form)',
+        );
+        webRef.current.injectJavaScript(fillScript);
+      } else {
+        // WebView is only mounting this render (e.g. right after a logout that
+        // unmounted it) — PREWARM_FORM_READY / onLoadEnd will inject instead.
+        logLogin('webRef not mounted yet → deferring auto-fill to PREWARM_FORM_READY/onLoadEnd');
+      }
+    } catch (e: any) {
+      // Injection failed (bridge to a torn-down WebView). PREWARM_FORM_READY /
+      // onLoadEnd re-inject later; the already-armed watchdog bounds the wait.
+      logLogin('⚠ auto-fill injection threw — relying on later injection points', e?.message ?? e);
+    }
 
     if (userType !== 'Invitee' && !IS_STAGING) {
       (async () => {
@@ -1902,8 +2027,16 @@ function AppContent() {
 
           let fcmToken = '';
           try {
-            fcmToken = await messaging().getToken();
+            // Race against a short timeout: a hung Firebase (SERVICE_NOT_AVAILABLE
+            // seen in the field taking 3s+) must not delay the sign_in call.
+            // Empty token is fine — index.js onTokenRefresh / syncDeviceToken
+            // register it later.
+            fcmToken = await Promise.race<string>([
+              messaging().getToken(),
+              new Promise<string>((resolve) => setTimeout(() => resolve(''), 2000)),
+            ]);
             if (fcmToken) fcmTokenRef.current = fcmToken;
+            else logLogin('FCM getToken timed out (2s) — continuing without token');
           } catch (e) {
             logLogin('FCM getToken error', (e as any)?.message ?? e);
           }
@@ -1922,15 +2055,26 @@ function AppContent() {
             },
           };
 
-          const res = await fetch(SIGN_IN_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json",
-              device_token: fcmToken,
-            },
-            body: JSON.stringify(payload),
-          });
+          // Abort after 15s: on a black-hole network (connects, never responds)
+          // fetch can hang for minutes; the abort lands in the catch below and
+          // fast-fails the login instead of waiting for the 55s watchdog.
+          const abort = new AbortController();
+          const abortTimer = setTimeout(() => abort.abort(), 15000);
+          let res: Response;
+          try {
+            res = await fetch(SIGN_IN_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                device_token: fcmToken,
+              },
+              body: JSON.stringify(payload),
+              signal: abort.signal,
+            });
+          } finally {
+            clearTimeout(abortTimer);
+          }
 
           const data = await res.json();
           logLogin(`← native sign_in: RESPONSE in ${Date.now() - apiStart}ms`, {
@@ -1955,12 +2099,29 @@ function AppContent() {
 
           // Credentials valid → keep the watchdog patient while the web login lands.
           nativeAuthOkRef.current = true;
+          if (loginInProgressRef.current) {
+            setLoadingStatus('Signed in — loading your workspace…');
+          }
           const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
           const isDriver: boolean = !!(
             data?.data?.isDriver ??
             data?.isDriver ??
             (data?.data?.user_type?.toLowerCase() === 'driver')
           );
+          if (!authToken) {
+            // Success response but no token where we look — log the shape so the
+            // extraction can be fixed (an empty auth_token silently breaks the
+            // FCM device-token sync and call notifications later). Joined
+            // strings, because Metro collapses arrays to "Array(n)".
+            const dataObj = data?.data ?? {};
+            logLogin('⚠ sign_in success but auth_token EMPTY — response shape', {
+              topLevelKeys: Object.keys(data ?? {}).join(', '),
+              dataKeys: Object.keys(dataObj).join(', '),
+              tokenishKeys:
+                Object.keys(dataObj).filter((k) => /token|auth/i.test(k)).join(', ') || '(none)',
+              nestedUserKeys: Object.keys(dataObj?.user ?? {}).join(', ') || '(none)',
+            });
+          }
           logLogin('✓ native sign_in OK (creds valid) → storing session', {
             authToken: authToken ? `${authToken.slice(0, 8)}…` : 'EMPTY',
             isDriver,
@@ -1969,6 +2130,18 @@ function AppContent() {
           await rememberSession(authToken, isDriver, fcmToken);
         } catch (e: any) {
           logLogin(`✗ native sign_in ERROR after ${Date.now() - apiStart}ms`, e?.message ?? e);
+          // Network-level failure (no response at all). Mirror the !res.ok
+          // fast-fail: without it, nativeAuthOkRef stays false and the loader
+          // sits frozen until the first 55s watchdog check.
+          if (!wasLoggedInRef.current && loginInProgressRef.current) {
+            if (loginTimeoutRef.current) {
+              clearTimeout(loginTimeoutRef.current);
+              loginTimeoutRef.current = null;
+            }
+            await failLogin(
+              'Could not reach the server. Please check your internet connection and try again.'
+            );
+          }
         }
       })();
     }
@@ -1997,14 +2170,19 @@ function AppContent() {
   const hidePostLoginLoader = () => {
     logLogin('hidePostLoginLoader → probe injected + 1500ms fallback armed');
     webRef.current?.injectJavaScript(webReadyProbeScript);
-    setTimeout(() => setLoading(false), 1500);
+    if (postLoginFallbackRef.current) clearTimeout(postLoginFallbackRef.current);
+    postLoginFallbackRef.current = setTimeout(() => setLoading(false), 1500);
   };
 
   const handleNavigationStateChange = async (navState: any) => {
     const url = navState.url.toLowerCase();
     lastWebUrlRef.current = url;
+    canGoBackRef.current = !!navState.canGoBack;
 
-    await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
+    // Never let a storage hiccup skip the success/logout handling below.
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
+    } catch { }
 
     const onLoginPage = url.includes("/login");
     // SOLUTION 2: success = left /login (isLoginSuccessUrl). isKnownPostLoginUrl
@@ -2031,11 +2209,9 @@ function AppContent() {
         knownEndpoint: isKnownPostLoginUrl(url),
       });
       console.log(`⏲ TOTAL login → web-login done: ${t1}ms (${(t1 / 1000).toFixed(1)}s)`);
-      loginInProgressRef.current = false;
-      pendingAutoFillRef.current = false;
-      wasLoggedInRef.current = true;
-      await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
-
+      // Disarm the watchdog and hide the loader FIRST. Persisting state used to
+      // come before these — if that await threw, the loader stayed up forever
+      // (the watchdog had already been told login was no longer in progress).
       if (loginTimeoutRef.current) {
         clearTimeout(loginTimeoutRef.current);
         loginTimeoutRef.current = null;
@@ -2043,6 +2219,14 @@ function AppContent() {
       // SPA route changes (pushState) fire here, not onLoadEnd — the single
       // reliable place to hide the loader after login.
       hidePostLoginLoader();
+      loginInProgressRef.current = false;
+      autofillRetryRef.current = 0;
+      wasLoggedInRef.current = true;
+      try {
+        await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
+      } catch (e: any) {
+        logLogin('⚠ failed to persist IS_LOGGED_IN (cold-start restore may miss)', e?.message ?? e);
+      }
 
       // Invitee (staff) never called the native sign_in, so the native FCM
       // token was never registered with the backend. Read the web session's
@@ -2069,13 +2253,10 @@ function AppContent() {
     }
 
     // LOGOUT / session-expiry: web returned to /login after being logged in.
-    if (
-      wasLoggedInRef.current &&
-      onLoginPage &&
-      isFirstWebLoadRef.current
-    ) {
+    if (wasLoggedInRef.current && onLoginPage) {
       logLogin('⎋ LOGOUT / session-expiry — returned to /login, resetting');
       loginInProgressRef.current = false;
+      resetAutoFillPageFlags();
       await AsyncStorage.multiRemove([
         STORAGE_KEYS.IS_LOGGED_IN,
         STORAGE_KEYS.SAVE_WEB_URL,
@@ -2085,6 +2266,10 @@ function AppContent() {
       ]);
       wasLoggedInRef.current = false;
       setShowWeb(false);
+      // Keep the WebView mounted (it is already sitting on /login) so the next
+      // Login press has a live webRef — otherwise the immediate auto-fill
+      // injection is silently dropped and login waits for a full page load.
+      setPreWarmMode(true);
       setLoading(false);
       setMobileNo('');
       setPassword('');
@@ -2156,6 +2341,16 @@ function AppContent() {
     function post(obj) {
       try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}
     }
+    // What has the page fetched so far? Surfaces whether the long post-login
+    // wait is chunk downloads (count/kb climbing) or idle JS boot (flat).
+    function resourceStats() {
+      try {
+        var rs = performance.getEntriesByType('resource');
+        var bytes = 0;
+        for (var i = 0; i < rs.length; i++) bytes += (rs[i].transferSize || 0);
+        return { count: rs.length, kb: Math.round(bytes / 1024) };
+      } catch (e) { return null; }
+    }
 
     function tick() {
       var fp = formPresent();
@@ -2178,6 +2373,7 @@ function AppContent() {
           spinner: spinnerPresent(),
           token: tokenPresent(),
           rs: document.readyState,
+          res: resourceStats(),
         });
       }
       if (now - startTime > MAX_WAIT) return; // give up silently
@@ -2263,10 +2459,12 @@ function AppContent() {
     if (!mobileNo || !password) return;
 
     var POLL_INTERVAL = 250;     // re-check form readiness ~4x/sec
-    // Poll for the form up to this ceiling. Injected on press (before the page is
-    // ready) it must outlast a slow /login load — measured up to ~108s — so it
-    // fills the instant the form appears instead of giving up early.
-    var MAX_WAIT = 120000;
+    // Poll for the form up to this ceiling, then post AUTOFILL_FORM_NOT_FOUND so
+    // native can reload the page once and retry (and finally fail) instead of
+    // sitting behind the loader. Slow-but-alive loads are covered by the retry:
+    // one reload restarts this window, so ~2×60s still outlasts the worst
+    // measured /login load (~108s).
+    var MAX_WAIT = 60000;
 
     var startTime = Date.now();
     var submitted = false;
@@ -2295,6 +2493,17 @@ function AppContent() {
       report('duplicate injection on same page — already submitted, skipping');
       return;
     }
+
+    // Guard against CONCURRENT POLLERS. The script can be injected from several
+    // points (Login press, PREWARM_FORM_READY, onLoadEnd) against the same live
+    // page; without this, two tick() loops each hold their own local submitted/
+    // filled flags and can both fill + click. A real page (re)load clears the
+    // flag, so the reload-retry path still gets a fresh poller.
+    if (window.__hrAutoFillPolling) {
+      report('poller already active on this page — skipping duplicate injection');
+      return;
+    }
+    window.__hrAutoFillPolling = true;
 
     function selectUserType() {
       var doctorButton = document.getElementById('mat-button-toggle-1-button');
@@ -2325,13 +2534,82 @@ function AppContent() {
       el.dispatchEvent(new Event('blur', { bubbles: true }));
     }
 
+    // Best-effort probe for the web app's visible login-error UI (wrong password
+    // etc.) so native can fail fast instead of waiting out its watchdog — the
+    // only fast-fail path for Invitee/staff, who never hit the native sign_in.
+    //
+    // Two tiers, because the web app also snackbars on SUCCESS ("You are logged
+    // in successfully.") while the login form is still in the DOM — matching any
+    // snackbar tore down a succeeding login in the field:
+    //  • field errors (mat-error) — always errors, success never renders them;
+    //  • snackbars/toasts — only errors when their TEXT says so; success-y or
+    //    unclassifiable text returns null (false negatives are cheap — the
+    //    native watchdog backstops; false positives kill a good login).
+    var SUCCESS_RE = /success|logged in|welcome/i;
+    var ERROR_RE = /invalid|incorrect|wrong|fail|error|unauthori|expired|blocked|denied|not (found|match|exist|valid)|already/i;
+
+    // textContent minus material icon ligatures ("done", "clear", …) which
+    // otherwise pollute the message shown to the user.
+    function visibleText(el) {
+      try {
+        var clone = el.cloneNode(true);
+        var icons = clone.querySelectorAll('mat-icon, .mat-icon, .material-icons');
+        for (var i = 0; i < icons.length; i++) {
+          icons[i].parentNode && icons[i].parentNode.removeChild(icons[i]);
+        }
+        return (clone.textContent || '').replace(/\\s+/g, ' ').trim();
+      } catch (e) {
+        return (el.textContent || '').replace(/\\s+/g, ' ').trim();
+      }
+    }
+
+    function findLoginError() {
+      var fieldError = document.querySelector('mat-error, .mat-error, .mat-mdc-form-field-error');
+      if (fieldError) return visibleText(fieldError) || 'Login failed';
+
+      var snack = document.querySelector(
+        'simple-snack-bar, .mat-snack-bar-container, .mat-mdc-snack-bar-container, .toast-error'
+      );
+      if (!snack) return null;
+      var text = visibleText(snack);
+      if (!text || SUCCESS_RE.test(text)) return null; // success/neutral → not an error
+      // Error-styled containers (panelClass with error/danger/warn) count even
+      // when the text isn't English; plain snackbars need error-y text.
+      var styledAsError = /error|danger|warn/i.test(snack.className || '');
+      if (styledAsError || ERROR_RE.test(text)) return text;
+      return null; // unclassifiable → let the watchdog decide
+    }
+
+    var errorReported = false;
+    function reportLoginError(text) {
+      if (errorReported) return;
+      errorReported = true;
+      report('✗ web login error UI detected: ' + text);
+      try {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'WEB_LOGIN_ERROR', text: text,
+        }));
+      } catch (e) {}
+    }
+
+    var errorStreak = 0; // consecutive ticks the error UI was visible pre-submit
+
     function tick() {
-      if (submitted) return;
+      if (submitted || window.__hrAutoLoginSubmitted) return;
       if (Date.now() - startTime > MAX_WAIT) {
+        // Release the poller slot so a retry injection on this same live page
+        // (no reload) can start a fresh poller instead of bailing at the guard.
+        window.__hrAutoFillPolling = false;
         report('🛑 GAVE UP — form not ready before MAX_WAIT (' + MAX_WAIT + 'ms)');
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'AUTOFILL_FORM_NOT_FOUND', waited: Date.now() - startTime,
+          }));
+        } catch (e) {}
         return;
       }
       if (!window.location.href.includes('/login')) {
+        window.__hrAutoFillPolling = false;
         report('not on /login anymore, stopping', { href: window.location.href });
         return;
       }
@@ -2373,8 +2651,17 @@ function AppContent() {
       }
 
       // Button may still be disabled until Angular finishes validating — re-tick,
-      // but do NOT re-fill (see above).
+      // but do NOT re-fill (see above). If a validation error stays visible for
+      // several consecutive ticks (not a transient async-validator flicker), the
+      // form will never become submittable — tell native instead of stalling.
       if (loginButton.disabled) {
+        var preSubmitError = findLoginError();
+        errorStreak = preSubmitError ? errorStreak + 1 : 0;
+        if (errorStreak >= 4) { // ~1s of a persistent visible error
+          window.__hrAutoFillPolling = false;
+          reportLoginError(preSubmitError);
+          return;
+        }
         report('submit still DISABLED — waiting for validation, re-poll (no refill)');
         setTimeout(tick, POLL_INTERVAL);
         return;
@@ -2385,16 +2672,27 @@ function AppContent() {
       // re-clicking there restarts the whole multi-second server round trip (and
       // fires duplicate logins), which made app logins far slower than the web.
       // Genuine failures (wrong password) are caught by the native login timeout.
+      if (window.__hrAutoLoginSubmitted) return; // another poller won the race
       loginButton.click();
       submitted = true;
       window.__hrAutoLoginSubmitted = true; // block re-submit on same page instance
       var clickedAt = Date.now();
       report('✓ SUBMIT CLICKED — waiting for web login (single submit)');
 
-      // Watch (log only, no re-click) until the page leaves /login.
+      // Watch (no re-click) until the page leaves /login. If the web app shows
+      // an error instead (wrong password — the server rejected the submit),
+      // report it so native can drop the loader right away. Only trust error UI
+      // while the login form is still on screen: a success snackbar during the
+      // post-login bootstrap (form already destroyed) is NOT a credential error.
       function watchSubmit() {
         if (!window.location.href.includes('/login')) {
           report('navigation started after submit (' + (Date.now() - clickedAt) + 'ms) — login accepted');
+          return;
+        }
+        var formStillThere = document.getElementById('mobile_no');
+        var postSubmitError = formStillThere ? findLoginError() : null;
+        if (postSubmitError) {
+          reportLoginError(postSubmitError);
           return;
         }
         if (Date.now() - clickedAt > 90000) return;
@@ -2488,6 +2786,71 @@ function AppContent() {
             `[PREWARM] ✓ login FORM ready at +${el}ms (${(el / 1000).toFixed(1)}s) — usable now (onLoadEnd comes much later)`,
           );
         }
+        // A login is waiting on this form: either the WebView mounted AFTER the
+        // Login press (webRef was null, the immediate injection was dropped) or
+        // an AUTOFILL_FORM_NOT_FOUND reload-retry just brought the form back.
+        // Inject now that the form exists — far earlier than onLoadEnd. The
+        // script's __hrAutoFillPolling guard makes overlapping injections no-ops.
+        if (loginInProgressRef.current) {
+          logLogin('PREWARM_FORM_READY + login active → injecting auto-fill');
+          webRef.current?.injectJavaScript(buildAutoFillScript(mobileNo, password, userType));
+        }
+        return;
+      }
+
+      // ─── AUTOFILL_FORM_NOT_FOUND (login form never rendered in the wait window) ─
+      // Reload the page once and let the fresh load retry; if the form is still
+      // missing after the retry, fail honestly instead of leaving the loader up
+      // until the 3-minute watchdog ceiling + false "Login Failed".
+      if (message?.type === 'AUTOFILL_FORM_NOT_FOUND') {
+        if (!loginInProgressRef.current) return;
+        if (autofillRetryRef.current === 0) {
+          autofillRetryRef.current = 1;
+          logLogin(`⟳ form not found after ${message.waited}ms — reloading /login for one retry`);
+          webRef.current?.reload();
+          // Fresh attempt → fresh watchdog window. PREWARM_FORM_READY / onLoadEnd
+          // re-inject the auto-fill when the reloaded form appears.
+          scheduleWatchdog(FIRST_CHECK_MS);
+        } else {
+          logLogin('✗ form STILL not found after reload — failing login');
+          if (loginTimeoutRef.current) {
+            clearTimeout(loginTimeoutRef.current);
+            loginTimeoutRef.current = null;
+          }
+          await failLogin(
+            nativeAuthOkRef.current
+              ? 'Your credentials are correct, but the app page failed to load. Please try again.'
+              : undefined,
+          );
+        }
+        return;
+      }
+
+      // ─── WEB_LOGIN_ERROR (web app showed a login error — e.g. wrong password) ─
+      // Fast-fail path for Invitee/staging ONLY — those logins are never
+      // validated by the native sign_in, so the web UI is the only error signal.
+      // For Doctor/Staff the native sign_in is the credential authority (wrong
+      // password already fast-fails via !res.ok), and acting on web-side UI
+      // sniffing there once tore down a SUCCEEDING login (success snackbar
+      // misread as an error) — so for them this is log-only.
+      if (message?.type === 'WEB_LOGIN_ERROR') {
+        const webGatedLogin = loginTypeRef.current === 'Invitee' || IS_STAGING;
+        if (loginInProgressRef.current && webGatedLogin) {
+          logLogin('✗ web login error UI detected', { text: message.text });
+          if (loginTimeoutRef.current) {
+            clearTimeout(loginTimeoutRef.current);
+            loginTimeoutRef.current = null;
+          }
+          await failLogin(
+            typeof message.text === 'string' && message.text.trim()
+              ? message.text.trim()
+              : 'Login failed. Please check your credentials.',
+          );
+        } else {
+          logLogin('web login error UI reported (log-only — native sign_in is authoritative)', {
+            text: message.text,
+          });
+        }
         return;
       }
 
@@ -2498,6 +2861,7 @@ function AppContent() {
         // can hand off the loader early (esp. single-org doctors, who sit on
         // /login for ~40s while /patients bootstraps). Safe no-op on multi-org.
         if (typeof message.msg === 'string' && message.msg.indexOf('SUBMIT CLICKED') !== -1) {
+          if (loginInProgressRef.current) setLoadingStatus('Verifying your credentials…');
           webRef.current?.injectJavaScript(loginHandoffProbeScript);
         }
         return;
@@ -2511,7 +2875,18 @@ function AppContent() {
           spinner: message.spinner, // web showing its own loader?
           token: message.token,     // auth session stored in localStorage?
           readyState: message.rs,
+          resources: message.res,   // { count, kb } fetched by the page so far — shows WHAT the long bootstrap is doing
         });
+        // Keep the loader text honest during the long single-org bootstrap
+        // (web session confirmed at ~6s, then ~36s of Angular chunk loading
+        // with the URL parked on /login — measured in the field).
+        if (loginInProgressRef.current && message.token) {
+          setLoadingStatus(
+            message.t > 20000
+              ? 'Still loading your workspace — this can take a moment on slow connections…'
+              : 'Signed in — loading your workspace…',
+          );
+        }
         return;
       }
 
@@ -2687,12 +3062,13 @@ function AppContent() {
             `);
           },
           (err) => {
-            const safeMsg = err.message.replace(/'/g, "\\'");
+            // JSON.stringify handles quotes/backslashes/newlines — a bare
+            // quote-escape broke the injected script on multiline messages.
             webRef.current?.injectJavaScript(`
               (function(){
                 var cb = window.__nativeGeoCallbacks && window.__nativeGeoCallbacks['${callbackId}'];
                 if(cb){
-                  cb.error({ code: ${err.code}, message: '${safeMsg}' });
+                  cb.error({ code: ${err.code}, message: ${JSON.stringify(err.message ?? 'Location error')} });
                   delete window.__nativeGeoCallbacks['${callbackId}'];
                 }
               })(); true;
@@ -2997,6 +3373,19 @@ function AppContent() {
               onNavigationStateChange={handleNavigationStateChange}
               onError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent); }}
               onHttpError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onHttpError', { code: e?.nativeEvent?.statusCode, url: e?.nativeEvent?.url }); }}
+              // The OS can kill the WebView renderer at any time (memory
+              // pressure). Without these, the app is left on a dead white
+              // screen forever — and a mid-login crash silently kills every
+              // injected poller. Reloading recovers both: onLoadEnd(/login)
+              // re-injects the auto-fill while a login is active.
+              onRenderProcessGone={(e: any) => {
+                logLogin('⚠ WebView renderer process gone — reloading', e?.nativeEvent);
+                webRef.current?.reload();
+              }}
+              onContentProcessDidTerminate={() => {
+                logLogin('⚠ WebView content process terminated — reloading');
+                webRef.current?.reload();
+              }}
               onShouldStartLoadWithRequest={(request) => {
                 if (request.url.startsWith('app-settings:')) {
                   requestLocationPermission();
@@ -3051,6 +3440,9 @@ function AppContent() {
             loop
             style={styles.lottie}
           />
+          {loadingStatus ? (
+            <Text style={styles.loaderText}>{loadingStatus}</Text>
+          ) : null}
         </View>
       )}
 
@@ -3062,7 +3454,15 @@ function AppContent() {
             <Text style={styles.modalText}>
               Please check your internet connection
             </Text>
-            <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]}>
+            <TouchableOpacity
+              style={[styles.button, { paddingHorizontal: 12 }]}
+              onPress={() => {
+                // Re-evaluate connectivity; useNetInfo picks up the refreshed
+                // state and hides this modal, and the reconnect effect reloads
+                // the WebView if it had errored.
+                NetInfo.refresh().catch(() => { });
+              }}
+            >
               <Text style={styles.buttonText}>Try again</Text>
             </TouchableOpacity>
           </View>
