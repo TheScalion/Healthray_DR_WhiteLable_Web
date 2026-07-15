@@ -55,6 +55,17 @@ class MainApplication : Application(), ReactApplication {
         enableVibration(false)
       }
       nm.createNotificationChannel(trackingChannel)
+
+      val fcmChannel = NotificationChannel(
+        "fcm-notifications",
+        "Push Notifications",
+        NotificationManager.IMPORTANCE_HIGH
+      ).apply {
+        description = "HealthRay push notifications"
+        setShowBadge(true)
+        enableVibration(true)
+      }
+      nm.createNotificationChannel(fcmChannel)
     }
   }
 

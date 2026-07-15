@@ -1,5 +1,10 @@
 import 'react-native-get-random-values';
 import React, { useRef, useState, useEffect } from "react";
+import messaging from '@react-native-firebase/messaging';
+import notifee, { EventType } from '@notifee/react-native';
+import { initFCM, getFCMToken } from './src/services/fcmService';
+import { showCallNotification } from './src/services/notificationHandler';
+import { rememberSession, syncDeviceToken, configureApiBase } from './src/services/deviceToken';
 import {
   View,
   Text,
@@ -40,7 +45,60 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import LottieView from 'lottie-react-native';
 import Geolocation from 'react-native-geolocation-service';
 
-const LOGIN_URL = "https://ray.healthray.com/login";
+// ─── Environment ─────────────────────────────────────────────────────────────
+// Set IS_STAGING = true  → staging  (devfront.healthray.com / node-stage)
+// Set IS_STAGING = false → production (ray.healthray.com / node)
+// Flip this one flag before building; all URLs below update automatically.
+const IS_STAGING = false;
+
+const API_BASE = IS_STAGING
+  ? 'https://node-stage.healthray.com'
+  : 'https://node.healthray.com';
+
+const WEB_BASE = IS_STAGING
+  ? 'https://devfront.healthray.com'
+  : 'https://ray.healthray.com';
+
+const LOGIN_URL = `${WEB_BASE}/login`;
+const SIGN_IN_URL = `${API_BASE}/api/v2/users/sign_in`;
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── SOLUTION 2: login-success URL detection ─────────────────────────────────
+// A login is considered successful when the web app redirects AWAY from /login.
+// Two signals, matching the flow spec:
+//   1. The URL hits a known post-login endpoint — /select-organization,
+//      /select-* (org/patient pickers), or any of the landing routes a
+//      single-org doctor / staff / driver drops onto directly.
+//   2. FALLBACK: the URL simply changed to anything other than /login. This
+//      catches every future/unknown landing route without needing to enumerate
+//      it. During the brief server round-trip the web app keeps the URL on
+//      /login, so this never false-fires mid-authentication.
+// `path` may be a full URL or a pathname; we lower-case + substring-match so it
+// works with either. Query strings and hashes are tolerated.
+const POST_LOGIN_URL_HINTS = [
+  '/select-organization',
+  '/patient',
+  '/calendar',
+  '/dashboard',
+];
+
+const isLoginSuccessUrl = (url: string): boolean => {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  // Still on the login page (including the transient reload during auth) → not done.
+  if (u.includes('/login')) return false;
+  // Left /login entirely → success (covers /select-* and every other route).
+  return true;
+};
+
+// True only for the explicitly-recognised post-login endpoints. Used for logging
+// / fast-path decisions; success itself is governed by isLoginSuccessUrl above.
+const isKnownPostLoginUrl = (url: string): boolean => {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  if (u.includes('/login')) return false;
+  return POST_LOGIN_URL_HINTS.some((hint) => u.includes(hint));
+};
 
 const STORAGE_KEYS = {
   ONLY_WEB: "ONLY_WEB",
@@ -51,7 +109,7 @@ const STORAGE_KEYS = {
 // ─── HRMS tracking constants ─────────────────────────────────────────────────
 // Native owns auth + base URL, so the WebView never sends them in the
 // START_TRACKING / STOP_TRACKING bridge payload.
-const TRACKING_API_BASE = 'https://node.healthray.com';
+const TRACKING_API_BASE = API_BASE;
 const TRACKING_PATH_START = '/api/v1/hrms/attendance/tracking/start';
 const TRACKING_PATH_BATCH = '/api/v1/hrms/attendance/tracking/batch';
 const TRACKING_PATH_END = '/api/v1/hrms/attendance/tracking/end';
@@ -165,6 +223,7 @@ function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng:
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
+
 // Guarantees a point per 10 s instead of relying on watchPosition's
 // distanceFilter+interval (which dropped 3-7 min gaps in the data).
 
@@ -187,6 +246,7 @@ const TRACKING_STORAGE = {
   LAST_ACTIVITY_TS: 'tracking_last_activity_ts',
   AUTH_TOKEN: 'auth_token',
   DEVICE_TOKEN: 'device_token',
+  FCM_TOKEN: 'fcm_registration_token',
 };
 const trackingSessionKey = (empId: number | string) => `tracking_session_id_${empId}`;
 const trackingBufferKey = (sessionId: string) => `tracking_buffer_${sessionId}`;
@@ -276,7 +336,7 @@ class HRMSLocationTracker {
     try {
       this.statusEmitter?.(status, detail);
     } catch (e) {
-      console.warn('[HRMS] status emit error', e);
+      console.log('[HRMS] status emit error', e);
     }
   }
 
@@ -336,7 +396,7 @@ class HRMSLocationTracker {
       }
       return true;
     } catch (e) {
-      console.warn('[HRMS] requestPermission error', e);
+      console.log('[HRMS] requestPermission error', e);
       return false;
     }
   }
@@ -374,7 +434,7 @@ class HRMSLocationTracker {
       }
       if (updates.length) await AsyncStorage.multiSet(updates);
     } catch (e) {
-      console.warn('[HRMS] persistRolledTokens error', e);
+      console.log('[HRMS] persistRolledTokens error', e);
     }
   }
 
@@ -411,7 +471,7 @@ class HRMSLocationTracker {
       // dying, something is fundamentally broken. Stop hard.
       const sinceLastResume = Date.now() - this.lastAutoResumeAt;
       if (this.lastAutoResumeAt > 0 && sinceLastResume < TRACKING_AUTO_RESUME_TIGHT_LOOP_MS) {
-        console.warn('[HRMS] tight-loop on auto-resume — aborting');
+        console.log('[HRMS] tight-loop on auto-resume — aborting');
         return this.fullSessionTeardown('session_expired');
       }
 
@@ -434,11 +494,11 @@ class HRMSLocationTracker {
         if (wait > 0) await new Promise<void>(r => setTimeout(r, wait));
         newSessionId = await this.startSession(employeeId, organizationId);
         if (newSessionId) break;
-        console.warn(`[HRMS] auto-resume attempt ${i + 1} failed`);
+        console.log(`[HRMS] auto-resume attempt ${i + 1} failed`);
       }
 
       if (!newSessionId) {
-        console.warn('[HRMS] auto-resume exhausted retries — stopping');
+        console.log('[HRMS] auto-resume exhausted retries — stopping');
         return this.fullSessionTeardown('session_expired');
       }
 
@@ -494,14 +554,14 @@ class HRMSLocationTracker {
         JSON.stringify(this.buffer),
       );
     } catch (e) {
-      console.warn('[HRMS] persistBuffer error', e);
+      console.log('[HRMS] persistBuffer error', e);
     }
   }
 
   private appendPoint(p: TrackingPoint): void {
     if (this.buffer.length >= TRACKING_MAX_BUFFER_POINTS) {
       const evicted = this.buffer.splice(0, this.buffer.length - TRACKING_MAX_BUFFER_POINTS + 1);
-      console.warn(`[HRMS] buffer overflow — evicted ${evicted.length} oldest point(s); check server connectivity`);
+      console.log(`[HRMS] buffer overflow — evicted ${evicted.length} oldest point(s); check server connectivity`);
     }
     this.buffer.push(p);
   }
@@ -755,7 +815,7 @@ class HRMSLocationTracker {
         // Dead-band → keep current state
       });
     } catch (e) {
-      console.warn('[HRMS] accelerometer subscription failed', e);
+      console.log('[HRMS] accelerometer subscription failed', e);
     }
   }
 
@@ -809,7 +869,7 @@ class HRMSLocationTracker {
           timestamp: pos.timestamp,
         }),
         (err) => {
-          console.warn('[HRMS] initial GPS fix failed', err.code, err.message);
+          console.log('[HRMS] initial GPS fix failed', err.code, err.message);
           resolve(null);
         },
         {
@@ -829,7 +889,7 @@ class HRMSLocationTracker {
     try {
       const initial = await this.getCurrentPositionOnce();
       if (!initial) {
-        console.warn('[HRMS] /start aborted — could not get initial GPS fix');
+        console.log('[HRMS] /start aborted — could not get initial GPS fix');
         return null;
       }
 
@@ -854,7 +914,7 @@ class HRMSLocationTracker {
       // success here may still be a backend error.
       const body = res?.data ?? {};
       if (body.statusState === 'error' || (typeof body.status === 'number' && body.status >= 400)) {
-        console.warn('[HRMS] /start backend error',
+        console.log('[HRMS] /start backend error',
           'status=', body.status, 'message=', body.message);
         if (body.status === 401) await this.handleAuthExpired();
         return null;
@@ -862,17 +922,17 @@ class HRMSLocationTracker {
 
       const sessionId = body?.data?.session_id;
       if (typeof sessionId !== 'string' || !sessionId) {
-        console.warn('[HRMS] /start returned no session_id — full body:', JSON.stringify(body));
+        console.log('[HRMS] /start returned no session_id — full body:', JSON.stringify(body));
         return null;
       }
       return sessionId;
     } catch (e) {
       if (axios.isAxiosError(e)) {
         if (e.response?.status === 401) await this.handleAuthExpired();
-        console.warn('[HRMS] /start failed', e.response?.status, e.message,
+        console.log('[HRMS] /start failed', e.response?.status, e.message,
           'body:', JSON.stringify(e.response?.data));
       } else {
-        console.warn('[HRMS] /start error', e);
+        console.log('[HRMS] /start error', e);
       }
       return null;
     }
@@ -933,9 +993,9 @@ class HRMSLocationTracker {
       await this.persistRolledTokens(res);
     } catch (e) {
       if (axios.isAxiosError(e)) {
-        console.warn('[HRMS] /end failed', e.response?.status, e.message);
+        console.log('[HRMS] /end failed', e.response?.status, e.message);
       } else {
-        console.warn('[HRMS] /end error', e);
+        console.log('[HRMS] /end error', e);
       }
     }
   }
@@ -991,22 +1051,22 @@ class HRMSLocationTracker {
       } else if (realStatus === 401) {
         await this.handleAuthExpired();
       } else if (realStatus >= 500) {
-        console.warn('[HRMS] /batch 5xx, retaining buffer', realStatus, body.message);
+        console.log('[HRMS] /batch 5xx, retaining buffer', realStatus, body.message);
         debugToast(`❌ /batch ${realStatus} server err — retrying`, true);
       } else if (realStatus === 429) {
-        console.warn('[HRMS] /batch 429 rate-limited, retaining buffer for next cycle');
+        console.log('[HRMS] /batch 429 rate-limited, retaining buffer for next cycle');
         debugToast('❌ /batch 429 rate-limited', true);
       } else {
-        console.warn('[HRMS] /batch 4xx, dropping batch', realStatus, body.message);
+        console.log('[HRMS] /batch 4xx, dropping batch', realStatus, body.message);
         debugToast(`❌ /batch ${realStatus} — dropped`, true);
         this.buffer = this.buffer.slice(sending.length);
         await this.persistBuffer();
       }
     } catch (e) {
       if (axios.isAxiosError(e)) {
-        console.warn('[HRMS] /batch network error', e.message);
+        console.log('[HRMS] /batch network error', e.message);
       } else {
-        console.warn('[HRMS] /batch error', e);
+        console.log('[HRMS] /batch error', e);
       }
     } finally {
       this.flushInFlight = false;
@@ -1103,7 +1163,7 @@ class HRMSLocationTracker {
     this.watchId = Geolocation.watchPosition(
       (pos) => this.handleLocation(pos),
       (err) => {
-        console.warn('[HRMS] GPS error', err.code, err.message);
+        console.log('[HRMS] GPS error', err.code, err.message);
         if (err.code === 1) this.emit('permission_denied', { reason: 'denied_at_runtime' });
         else if (err.code === 2) this.emit('permission_denied', { reason: 'provider_disabled' });
       },
@@ -1123,7 +1183,7 @@ class HRMSLocationTracker {
         (pos) => this.handleLocation(pos),
         (err) => {
           if (err.code !== 3) {
-            console.warn('[HRMS] active-poll GPS error', err.code, err.message);
+            console.log('[HRMS] active-poll GPS error', err.code, err.message);
           }
           if (err.code === 1) this.emit('permission_denied', { reason: 'denied_at_runtime' });
           if (err.code === 2) this.emit('permission_denied', { reason: 'provider_disabled' });
@@ -1131,10 +1191,7 @@ class HRMSLocationTracker {
         {
           enableHighAccuracy: this.motionState === 'active',
           timeout: 8000,
-          // Accept a fix up to one full poll interval old — when the JS timer fires
-          // while the screen is off (rare Doze window), this lets it read the cached
-          // fix the watchPosition foreground service already delivered instead of
-          // demanding a fresh hardware poll (which times out in Doze).
+
           maximumAge: this.motionState === 'active' ? ACTIVE_POLL_MS : STATIONARY_POLL_MS,
           forceRequestLocation: this.motionState === 'active',
         } as any,
@@ -1167,12 +1224,6 @@ class HRMSLocationTracker {
     this.stopFlushTimer();
   }
 
-  // ── GPS health-check (called on AppState → active) ────────────────────────
-  // On aggressive OEM variants (Samsung, Xiaomi, Huawei) the OS can kill the
-  // foreground service without touching watchId in JS-land. The stale watchId
-  // then blocks startGPS()'s re-entry guard forever. This method detects a
-  // silent GPS death by checking how long ago the last fix was accepted and
-  // restarts the full GPS stack if the gap exceeds 3× the expected poll cadence.
   restartGPSIfDead(): void {
     if (!this.active) return;
     const staleMs = Date.now() - this.lastHandledAt;
@@ -1180,13 +1231,17 @@ class HRMSLocationTracker {
     // lastHandledAt === 0 means no fix has ever arrived — let the normal
     // startup path handle it; don't restart before the first fix has had time.
     if (this.lastHandledAt === 0 || staleMs <= thresholdMs) return;
-    console.warn(`[HRMS] GPS stale for ${Math.round(staleMs / 1000)} s — restarting`);
+    console.log(`[HRMS] GPS stale for ${Math.round(staleMs / 1000)} s — restarting`);
     this.stopGPS();   // clears watchId, freeing the startGPS guard
     this.startGPS();
     if (!this.flushTimer) this.startFlushTimer();
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
+  async requestPermission(): Promise<boolean> {
+    return this.hasLocationPermission();
+  }
+
   async start(employeeId: number, organizationId: number): Promise<void> {
     if (this.starting) return;
     this.starting = true;
@@ -1211,19 +1266,10 @@ class HRMSLocationTracker {
       const granted = await this.hasLocationPermission();
       if (!granted) {
         this.emit('permission_denied');
-        Linking.openSettings().catch(() => { });
+        openAppSettings();
         return;
       }
 
-      // ALWAYS call /start when the user explicitly taps Start Tracking.
-      //
-      // A stored session_id without an active in-memory session
-      // (this.active === null at this point) is stale data — typically from:
-      //   • Previous app install pointing to a different backend (stage→prod)
-      //   • Auth tokens that have since rolled or been wiped
-      //   • A session the backend already auto-closed (24h cap)
-      // Reusing it silently means /start is never called, no TRACKING_START
-      // row is written, and /batch later returns 410.
       const previousSessionId = await AsyncStorage.getItem(trackingSessionKey(employeeId));
       if (previousSessionId) {
         await AsyncStorage.removeItem(trackingSessionKey(employeeId));
@@ -1251,7 +1297,7 @@ class HRMSLocationTracker {
       try {
         this.startGPS();
       } catch (e) {
-        console.warn('[HRMS] startGPS failed', e);
+        console.log('[HRMS] startGPS failed', e);
         this.emit('start_failed');
         return;
       }
@@ -1264,16 +1310,12 @@ class HRMSLocationTracker {
           await AsyncStorage.setItem(TRACKING_BATTERY_OPT_KEY, 'true');
           try {
             const pkg = DeviceInfo.getBundleId();
-            // Linking.sendIntent was removed in modern RN. Use the intent URI
-            // scheme so Android opens the "Ignore battery optimizations" dialog
-            // directly for this app — Linking.openSettings() only reaches the
-            // generic settings page and the user can never find the right toggle.
             await Linking.openURL(
               `intent:#Intent;action=android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS;data=package:${pkg};end`,
             );
           } catch (e) {
-            console.warn('[HRMS] battery-opt request failed', e);
-            Linking.openSettings().catch(() => { });
+            console.log('[HRMS] battery-opt request failed', e);
+            openAppSettings();
           }
         }
 
@@ -1300,7 +1342,7 @@ class HRMSLocationTracker {
 
   async stop(): Promise<void> {
     if (!this.active) {
-      console.warn('[HRMS] STOP_TRACKING received with no active session');
+      console.log('[HRMS] STOP_TRACKING received with no active session');
       return;
     }
     const session = this.active;
@@ -1358,7 +1400,7 @@ class HRMSLocationTracker {
       try {
         this.startGPS();
       } catch (e) {
-        console.warn('[HRMS] resumeIfPossible: startGPS failed — clearing active session', e);
+        console.log('[HRMS] resumeIfPossible: startGPS failed — clearing active session', e);
         this.active = null;
         return;
       }
@@ -1370,7 +1412,7 @@ class HRMSLocationTracker {
         resumed: true,
       });
     } catch (e) {
-      console.warn('[HRMS] resumeIfPossible error', e);
+      console.log('[HRMS] resumeIfPossible error', e);
     }
   }
 
@@ -1380,13 +1422,22 @@ class HRMSLocationTracker {
 }
 
 const hrmsTracker = new HRMSLocationTracker();
+
+async function openAppSettings(): Promise<void> {
+  try {
+    await Linking.openSettings();
+  } catch (e) {
+    console.log('[Bridge] openAppSettings error', e);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
 const IS_TABLET = width >= 768;
 
-const BASE_URL = 'https://node.healthray.com/api/v1/';
+const BASE_URL = `${API_BASE}/api/v1/`;
 const BUILD_MANAGMENT_API = 'build_management/check_update_required';
 
 const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
@@ -1412,45 +1463,33 @@ function AppContent() {
   const isFirstWebLoadRef = useRef(true);
   const lastWebUrlRef = useRef<string>('');
   const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loginPageReady = useRef(false);
+  const pendingAutoFill = useRef<string | null>(null);
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
-  // Auto-fill / login orchestration: inject the login script exactly once per
-  // attempt and drive the loader-hide off "left /login" (not a fixed route).
   const loginPageReadyRef = useRef(false);   // /login DOM has loaded (pre-warm may set early)
   const pendingAutoFillRef = useRef(false);  // tapped before ready → flush on load
   const loginInProgressRef = useRef(false);  // a login is awaiting its web result
   const webErroredRef = useRef(false);       // WebView had a load error → reload on reconnect
   const loginStartRef = useRef<number>(0);   // ms timestamp of Login press (for elapsed-time logs)
-  const nativeAuthOkRef = useRef(false);     // native sign_in confirmed the credentials are valid
+  const prewarmStartRef = useRef<number>(0); // ms timestamp pre-warm began (WebView mounted at /login)
+  const prewarmLoadCountRef = useRef(0);     // how many FULL /login loads the pre-warm did (each = full Angular boot)
+  const nativeAuthOkRef = useRef(false);     // native sign_in confirmed the credentials are valid (or web-gated)
+  const loginTypeRef = useRef<string>('Doctor'); // userType captured at login (for post-login handling)
+  const fcmTokenRef = useRef<string>('');    // cached FCM device token (for WEB_AUTH_TOKENS sync)
 
   const { isConnected, isInternetReachable } = useNetInfo();
 
   const [showWeb, setShowWeb] = useState(false);
-  // Gate the WebView mount until checkLoginState resolves, so it mounts once
-  // with the correct source (savedUrl when logged in, LOGIN_URL to pre-warm
-  // when logged out) and never double-loads.
-  const [bootResolved, setBootResolved] = useState(false);
   const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  // Prefilled ONLY in dev. Production ships empty so (a) no real credentials
-  // leak and (b) the user spends ~10s typing, which overlaps the WebView
-  // pre-warm — so /login is already loaded when they tap Login (pageReady=true,
-  // eliminating the ~12s cold-load you see when tapping instantly on prefilled
-  // creds). NOTE: in dev, prefilled creds let you tap instantly BEFORE pre-warm
-  // finishes — to measure real timing, wait ~12s after launch, or test a
-  // release build.
   const [mobileNo, setMobileNo] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [userType, setUserType] = useState('Doctor');
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [preWarmMode, setPreWarmMode] = useState(false);
   const [mobileNoError, setMobileNoError] = useState<string | null>(null);
   const [netInfoReady, setNetInfoReady] = useState(false);
-  // Show the "No Internet" modal only when isConnected is DEFINITIVELY false.
-  // We deliberately ignore isInternetReachable: NetInfo determines that by
-  // pinging https://clients3.google.com/generate_204, which is throttled or
-  // blocked on many Indian mobile networks and corporate WiFi. Trusting it
-  // produces false-negative "offline" modals when the phone in fact has
-  // working internet. isConnected is the reliable OS link-layer signal.
   const showInternetModel = netInfoReady && isConnected === false;
 
   const [userBasicData, setUserBasicData] = useState<any>(null);
@@ -1469,9 +1508,30 @@ function AppContent() {
       : PLAYSTORE_URL;
   };
 
+
+  useEffect(() => {
+    (async () => {
+      const [savedUrl, isLoggedIn] = await Promise.all([
+        AsyncStorage.getItem(STORAGE_KEYS.SAVE_WEB_URL),
+        AsyncStorage.getItem(STORAGE_KEYS.IS_LOGGED_IN),
+      ]);
+
+      if (isLoggedIn === "true") {
+        wasLoggedInRef.current = true;
+        setInitialWebUrl(savedUrl ?? LOGIN_URL);
+        setShowWeb(true);
+      } else {
+        // Pre-warm the WebView at /login in the background while user fills credentials
+        prewarmStartRef.current = Date.now();
+        prewarmLoadCountRef.current = 0;
+        console.log('[PREWARM start] WebView mounting at /login — measuring full loads');
+        setPreWarmMode(true);
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     RNBootSplash.hide({ fade: true });
-    console.log(new Date().toISOString(), '111111111');
   }, []);
 
   // Hydrate currentUser from AsyncStorage so it's available immediately after app reopen
@@ -1484,30 +1544,84 @@ function AppContent() {
   useEffect(() => {
     const requestPermissions = async () => {
       if (Platform.OS === 'android') {
-        await PermissionsAndroid.requestMultiple([
+        const perms: string[] = [
           PermissionsAndroid.PERMISSIONS.CAMERA,
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        ]);
+        ];
+        // Android 13+ (API 33) requires runtime POST_NOTIFICATIONS grant
+        if ((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS) {
+          perms.push((PermissionsAndroid.PERMISSIONS as any).POST_NOTIFICATIONS);
+        }
+        const results = await PermissionsAndroid.requestMultiple(perms as any);
+        const notifPerm = (results as any)['android.permission.POST_NOTIFICATIONS'];
+        if (notifPerm && notifPerm !== 'granted') {
+          console.log('[PERMISSIONS] ⚠ POST_NOTIFICATIONS not granted:', notifPerm);
+        }
       }
     };
     requestPermissions();
   }, []);
 
-  // Network online/offline tracking — used to reload WebView on reconnect.
-  // Same reasoning as showInternetModel: trust isConnected, ignore the
-  // unreliable isInternetReachable. We treat null as "online" so the
-  // WebView reload + HRMS flush logic doesn't get gated on a flaky probe.
+  // ─── Firebase Cloud Messaging ─────────────────────────────────────────────
+  useEffect(() => {
+    configureApiBase(API_BASE);
+
+    let unsubscribeFcm: () => void = () => { };
+
+    initFCM((newToken) => {
+      // Only update the in-memory ref here.
+      // syncDeviceToken is handled exclusively by index.js onTokenRefresh
+      // so we never fire two concurrent refresh_token API calls for the same rotation.
+      fcmTokenRef.current = newToken;
+    }).then(({ token, unsubscribe: unsub }) => {
+      unsubscribeFcm = unsub;
+      if (token) {
+        fcmTokenRef.current = token;
+        console.log('[FCM] ✅ Token ready:', token);
+      } else {
+        console.log('[FCM] ⚠ Token empty — check [FCM] logs in fcmService');
+      }
+    }).catch((e) => {
+      console.log('[FCM] ❌ initFCM error:', e?.message ?? e);
+    });
+
+    syncDeviceToken();
+
+    const unsubscribeBgTap = messaging().onNotificationOpenedApp((remoteMessage: any) => {
+      const type = remoteMessage?.data?.notification_type;
+      if (type === 'AMBULANCE_CALL_DISPATCHED' || type === 'AMBULANCE_CALL_REASSIGNED') {
+        setTimeout(() => {
+          webRef.current?.injectJavaScript(`window.location.href = '/ambulance'; true;`);
+        }, 500);
+      }
+    });
+
+    notifee.getInitialNotification().then(initial => {
+      if (initial?.notification?.data?.call_id) {
+        setInitialWebUrl(`${WEB_BASE}/ambulance`);
+      }
+    });
+
+    const unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
+      if (type === EventType.PRESS && detail.notification?.data?.call_id) {
+        webRef.current?.injectJavaScript(`window.location.href = '/ambulance'; true;`);
+      }
+    });
+
+    return () => {
+      unsubscribeFcm();
+      unsubscribeBgTap();
+      unsubscribeNotifee();
+    };
+  }, []);
+  // ─────────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (!netInfoReady) return;
     const isOnline = isConnected !== false;
     isOnlineRef.current = isOnline;
 
     if (prevInternetRef.current === false && isOnline) {
-      // Reload the WebView on reconnect ONLY when the page actually failed to
-      // load while offline. Previously this reloaded on every offline→online
-      // transition; on flaky mobile networks isConnected flaps constantly, so
-      // the WebView kept reloading (blank/loading flashes) — a major source of
-      // "loader keeps showing on slow internet". Also never reload mid-login.
       if (loginInProgressRef.current) {
         // in-flight login — a reload would throw it away; leave it alone
       } else if (webErroredRef.current && webRef.current) {
@@ -1530,8 +1644,7 @@ function AppContent() {
     const sub = AppState.addEventListener('change', async (nextAppState) => {
       if (nextAppState !== 'active') return;
       if (hrmsTracker.getActiveSession()) {
-        // Restart GPS first if the foreground service was silently killed by the
-        // OS while the screen was off (common on Samsung/Xiaomi/Huawei).
+
         hrmsTracker.restartGPSIfDead();
         if (isOnlineRef.current) hrmsTracker.flushNow().catch(() => { });
       }
@@ -1553,7 +1666,7 @@ function AppContent() {
       try {
         webRef.current?.injectJavaScript(script);
       } catch (e) {
-        console.warn('[HRMS] failed to dispatch status', status, e);
+        console.log('[HRMS] failed to dispatch status', status, e);
       }
 
       if (status === 'auth_expired') {
@@ -1569,7 +1682,7 @@ function AppContent() {
     });
 
     hrmsTracker.resumeIfPossible().catch((e) =>
-      console.warn('[HRMS] resume failed', e),
+      console.log('[HRMS] resume failed', e),
     );
 
     return () => {
@@ -1577,26 +1690,6 @@ function AppContent() {
     };
   }, []);
 
-  useEffect(() => {
-    const checkLoginState = async () => {
-      const savedUrl = await AsyncStorage.getItem(STORAGE_KEYS.SAVE_WEB_URL);
-      const isLoggedIn = await AsyncStorage.getItem(STORAGE_KEYS.IS_LOGGED_IN);
-
-      if (isLoggedIn === "true") {
-        wasLoggedInRef.current = true;
-        setInitialWebUrl(savedUrl ?? LOGIN_URL);
-        setShowWeb(true);
-      } else {
-        // Logged out: mount the WebView with LOGIN_URL so the Angular SPA
-        // boots (pre-warms) behind the native login screen.
-        setInitialWebUrl(LOGIN_URL);
-        setShowWeb(false);
-      }
-      // Source is now decided — allow the WebView to mount.
-      setBootResolved(true);
-    };
-    checkLoginState();
-  }, []);
 
   const convertLocalTimeToUtcTime = () => {
     const localTime = new Date();
@@ -1726,45 +1819,37 @@ function AppContent() {
     setLoading(true);
     Keyboard.dismiss();
 
-    // Reveal the already-warm WebView and start the web-side login immediately.
-    // We do NOT wait for the native sign_in below: the web login uses these
-    // credentials directly, and sign_in is only for HRMS tokens + early
-    // validation. The Angular SPA has been pre-warming behind the login screen,
-    // so this is the fast path.
     isFirstWebLoadRef.current = true;
     loginInProgressRef.current = true;
     setInitialWebUrl(LOGIN_URL);
     setShowWeb(true);
-    // Inject the auto-fill EXACTLY once. If the pre-warmed /login page is ready,
-    // inject now; otherwise defer to handleLoadEnd. Injecting from both here and
-    // handleLoadEnd would run two concurrent auto-fill pollers (double submit /
-    // racing fills) — a cause of intermittent login failures, worse on slow
-    // networks where the tap beats the page load.
-    // If the /login page is already warm, inject now. Otherwise handleLoadEnd
-    // injects when it finishes loading (it (re)injects on every /login load
-    // while loginInProgress — which also re-submits after the web app's
-    // post-submit full reload back to /login). The auto-fill self-aborts if the
-    // page has already left /login, so this never double-submits a success.
-    if (loginPageReadyRef.current) {
-      logLogin('page already warm → injecting auto-fill NOW');
-      webRef.current?.injectJavaScript(autoFillScript);
-    } else {
-      logLogin('page NOT ready → auto-fill will inject on onLoadEnd(/login)');
+
+    nativeAuthOkRef.current = false;
+    loginTypeRef.current = userType;
+    if (userType === 'Invitee' || IS_STAGING) {
+      nativeAuthOkRef.current = true;
     }
 
-    // Login watchdog. The web login (esp. single-organization doctors landing
-    // on /calendar) can legitimately take 60–90s. We must NOT declare failure
-    // just because a fixed timer elapsed — that tore down real, in-progress
-    // logins that then succeeded seconds later. So: once the native sign_in has
-    // CONFIRMED the credentials are valid, we stay patient and keep waiting for
-    // the web navigation (the loader stays up), only giving up at a generous
-    // absolute ceiling. If native has NOT confirmed by the first checkpoint
-    // (wrong creds are already torn down in the sign_in branch, so this means a
-    // stalled/failed web login), we fail.
+    // Inject the auto-fill IMMEDIATELY, whether or not the page reports "ready".
+    // The script polls for the form itself, so it fills + submits the moment the
+    // form appears — which is far earlier than onLoadEnd. onLoadEnd only fires
+    // when the ENTIRE /login page finishes (every image/font/trailing request);
+    // that was measured at 108s on a slow network, and deferring the auto-fill to
+    // it blocked login for the full 108s even though the form was usable long
+    // before. Injecting now + polling avoids that. onLoadEnd still (re)injects as
+    // a fallback, and the window.__hrAutoLoginSubmitted guard prevents any
+    // double-submit across the two injection points.
+    const fillScript = buildAutoFillScript(mobileNo, password, userType);
+    logLogin(
+      loginPageReadyRef.current
+        ? 'page warm → injecting auto-fill NOW'
+        : 'page NOT ready → injecting auto-fill anyway (script self-polls for the form)',
+    );
+    webRef.current?.injectJavaScript(fillScript);
+
     const FIRST_CHECK_MS = 55000;
     const RECHECK_MS = 15000;
     const ABSOLUTE_MAX_MS = 180000; // 3 min hard ceiling even when creds are valid
-    nativeAuthOkRef.current = false;
 
     const failLogin = async () => {
       logLogin('✗ login failed — tearing down');
@@ -1794,8 +1879,6 @@ function AppContent() {
         if (currentUrl && !currentUrl.includes("/login")) return;
 
         if (nativeAuthOkRef.current && elapsed < ABSOLUTE_MAX_MS) {
-          // Credentials are valid (native confirmed) — the web login is just
-          // slow. Keep the loader and keep waiting for the navigation.
           logLogin('web login slow but credentials valid — still waiting', {
             elapsedMs: elapsed,
           });
@@ -1811,91 +1894,84 @@ function AppContent() {
     };
     scheduleWatchdog(FIRST_CHECK_MS);
 
-    // Native sign_in runs concurrently (not on the critical path): it stores
-    // HRMS tokens on success and preserves fast wrong-password feedback.
-    (async () => {
-      const apiStart = Date.now();
-      try {
-        logLogin('→ native sign_in: START');
-        const passwordPayload = JSON.stringify({
-          text: password,
-          time: convertLocalTimeToUtcTime(),
-        });
-        const encryptedPassword = encryptText(passwordPayload);
-        const payload = {
-          user: {
-            mobile_no: mobileNo,
-            password: encryptedPassword,
-            platform: Platform.OS === "android" ? "Android" : "iOS",
-            user_type: userType,
-          },
-        };
+    if (userType !== 'Invitee' && !IS_STAGING) {
+      (async () => {
+        const apiStart = Date.now();
+        try {
+          logLogin('→ native sign_in: START');
 
-        const res = await fetch(
-          "https://node.healthray.com/api/v2/users/sign_in",
-          {
+          let fcmToken = '';
+          try {
+            fcmToken = await messaging().getToken();
+            if (fcmToken) fcmTokenRef.current = fcmToken;
+          } catch (e) {
+            logLogin('FCM getToken error', (e as any)?.message ?? e);
+          }
+
+          const passwordPayload = JSON.stringify({
+            text: password,
+            time: convertLocalTimeToUtcTime(),
+          });
+          const encryptedPassword = encryptText(passwordPayload);
+          const payload = {
+            user: {
+              mobile_no: mobileNo,
+              password: encryptedPassword,
+              platform: Platform.OS === "android" ? "Android" : "iOS",
+              user_type: userType,
+            },
+          };
+
+          const res = await fetch(SIGN_IN_URL, {
             method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              device_token: fcmToken,
+            },
             body: JSON.stringify(payload),
-          }
-        );
+          });
 
-        const data = await res.json();
-        logLogin(`← native sign_in: RESPONSE in ${Date.now() - apiStart}ms`, {
-          httpStatus: res.status,
-          statusState: data?.statusState,
-          message: data?.message ?? '—',
-        });
+          const data = await res.json();
+          logLogin(`← native sign_in: RESPONSE in ${Date.now() - apiStart}ms`, {
+            httpStatus: res.status,
+            statusState: data?.statusState,
+            message: data?.message ?? '—',
+          });
 
-        if (!res.ok || data?.statusState !== "success") {
-          logLogin('✗ native sign_in FAILED', { webAlreadyLoggedIn: wasLoggedInRef.current });
-          // Native validation failed. Only abort if the web side hasn't already
-          // logged in (reached /select-organization) — otherwise a hiccup on the
-          // native call shouldn't tear down a good web session.
-          if (!wasLoggedInRef.current) {
-            if (loginTimeoutRef.current) {
-              clearTimeout(loginTimeoutRef.current);
-              loginTimeoutRef.current = null;
+          if (!res.ok || data?.statusState !== "success") {
+            logLogin('✗ native sign_in FAILED', { webAlreadyLoggedIn: wasLoggedInRef.current });
+            // Wrong credentials → fast fail, unless the web login already
+            // succeeded (a native hiccup shouldn't tear down a good session).
+            if (!wasLoggedInRef.current) {
+              if (loginTimeoutRef.current) {
+                clearTimeout(loginTimeoutRef.current);
+                loginTimeoutRef.current = null;
+              }
+              await failLogin();
             }
-            loginInProgressRef.current = false;
-            pendingAutoFillRef.current = false;
-            await AsyncStorage.multiRemove([
-              STORAGE_KEYS.IS_LOGGED_IN,
-              STORAGE_KEYS.SAVE_WEB_URL,
-              TRACKING_STORAGE.AUTH_TOKEN,
-              TRACKING_STORAGE.DEVICE_TOKEN,
-            ]);
-            setShowWeb(false);
-            setLoading(false);
-            Alert.alert("Login Failed", data?.message || "Unable to sign in");
+            return;
           }
-          return;
+
+          // Credentials valid → keep the watchdog patient while the web login lands.
+          nativeAuthOkRef.current = true;
+          const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
+          const isDriver: boolean = !!(
+            data?.data?.isDriver ??
+            data?.isDriver ??
+            (data?.data?.user_type?.toLowerCase() === 'driver')
+          );
+          logLogin('✓ native sign_in OK (creds valid) → storing session', {
+            authToken: authToken ? `${authToken.slice(0, 8)}…` : 'EMPTY',
+            isDriver,
+          });
+          // rememberSession saves auth_token, device_token=native FCM token, user_role
+          await rememberSession(authToken, isDriver, fcmToken);
+        } catch (e: any) {
+          logLogin(`✗ native sign_in ERROR after ${Date.now() - apiStart}ms`, e?.message ?? e);
         }
-
-        // Credentials confirmed valid → the web login WILL succeed (just slow).
-        // Tell the watchdog to stay patient instead of failing on a timer.
-        nativeAuthOkRef.current = true;
-
-        // Persist auth tokens so the HRMS tracker can attach them to every
-        // /tracking/* request without going through the WebView.
-        const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
-        const deviceToken: string = data?.data?.device_token ?? data?.device_token ?? '';
-        logLogin('✓ native sign_in OK (creds valid) → patient wait + storing HRMS tokens', {
-          authToken: authToken ? `${authToken.slice(0, 8)}…` : 'EMPTY',
-          deviceToken: deviceToken ? `${deviceToken.slice(0, 8)}…` : 'EMPTY',
-        });
-        await AsyncStorage.multiSet([
-          [STORAGE_KEYS.IS_LOGGED_IN, 'true'],
-          [TRACKING_STORAGE.AUTH_TOKEN, authToken],
-          [TRACKING_STORAGE.DEVICE_TOKEN, deviceToken],
-        ]);
-      } catch (e: any) {
-        // A native-call network error alone shouldn't kill the web login; the
-        // 55s timeout covers a fully-failed login.
-        logLogin(`✗ native sign_in ERROR after ${Date.now() - apiStart}ms`, e?.message ?? e);
-        console.warn('[login] native sign_in error', e?.message ?? e);
-      }
-    })();
+      })();
+    }
   };
 
   const handleLoadEnd = (e: any) => {
@@ -1904,28 +1980,20 @@ function AppContent() {
     logLogin('onLoadEnd', { url });
     if (url.includes("/login")) {
       loginPageReadyRef.current = true;
-      // (Re)inject the auto-fill on EVERY /login load while a login is active.
-      // This covers three cases with one rule:
-      //   1. first load after tapping (pre-warm wasn't ready yet),
-      //   2. the web app's full page reload back to /login after submit — which
-      //      wipes the form and our script, so we must re-fill + re-submit,
-      //   3. any subsequent bounce back to /login.
-      // The script self-aborts if the page has already left /login, so a
-      // successful login (which navigates away) is never double-submitted.
-      // During pre-warm (no active login) we do NOT inject, so empty
-      // credentials are never entered.
+
       if (loginInProgressRef.current) {
         logLogin('onLoadEnd(/login) + login active → (re)injecting auto-fill');
-        webRef.current?.injectJavaScript(autoFillScript);
+        webRef.current?.injectJavaScript(buildAutoFillScript(mobileNo, password, userType));
       } else {
-        logLogin('onLoadEnd(/login) → pre-warm ready (no active login)');
+        prewarmLoadCountRef.current += 1;
+        const elapsed = prewarmStartRef.current ? Date.now() - prewarmStartRef.current : 0;
+        console.log(
+          `[PREWARM] full /login load #${prewarmLoadCountRef.current} done at +${elapsed}ms (${(elapsed / 1000).toFixed(1)}s) — each load is a full Angular boot`,
+        );
       }
     }
   };
 
-  // Hide the loader once the post-login page has painted real content
-  // (WEB_READY), with a fixed 1500ms fallback so a slow render never reveals a
-  // blank page. Used for ANY authenticated landing page, not a fixed route.
   const hidePostLoginLoader = () => {
     logLogin('hidePostLoginLoader → probe injected + 1500ms fallback armed');
     webRef.current?.injectJavaScript(webReadyProbeScript);
@@ -1939,19 +2007,29 @@ function AppContent() {
     await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
 
     const onLoginPage = url.includes("/login");
+    // SOLUTION 2: success = left /login (isLoginSuccessUrl). isKnownPostLoginUrl
+    // just tags whether we landed on a recognised endpoint (/select-*, /patient,
+    // …) for clearer logs — the success decision itself is the general rule.
+    const successUrl = isLoginSuccessUrl(url);
     logLogin('onNavigationStateChange', {
       url,
       onLoginPage,
+      successUrl,
+      knownPostLogin: isKnownPostLoginUrl(url),
       loginInProgress: loginInProgressRef.current,
       wasLoggedIn: wasLoggedInRef.current,
     });
 
     // Login SUCCESS: an in-progress login navigated away from /login. NOT tied
-    // to /select-organization — single-organization users (who land straight on
-    // /calendar or a dashboard) previously got stuck behind the loader forever.
-    if (loginInProgressRef.current && !onLoginPage) {
+    // to /select-organization only — single-organization users (who land straight
+    // on /calendar or a dashboard) previously got stuck behind the loader forever,
+    // so any non-/login URL counts (see isLoginSuccessUrl).
+    if (loginInProgressRef.current && successUrl) {
       const t1 = Date.now() - loginStartRef.current;
-      logLogin('✓✓ LOGIN SUCCESS — left /login, hiding loader', { landedOn: url });
+      logLogin('✓✓ LOGIN SUCCESS — left /login, hiding loader', {
+        landedOn: url,
+        knownEndpoint: isKnownPostLoginUrl(url),
+      });
       console.log(`⏲ TOTAL login → web-login done: ${t1}ms (${(t1 / 1000).toFixed(1)}s)`);
       loginInProgressRef.current = false;
       pendingAutoFillRef.current = false;
@@ -1965,6 +2043,28 @@ function AppContent() {
       // SPA route changes (pushState) fire here, not onLoadEnd — the single
       // reliable place to hide the loader after login.
       hidePostLoginLoader();
+
+      // Invitee (staff) never called the native sign_in, so the native FCM
+      // token was never registered with the backend. Read the web session's
+      // auth token from localStorage and post it back (WEB_AUTH_TOKENS) so
+      // native can sync the FCM token via refresh_token.
+      if (loginTypeRef.current === 'Invitee') {
+        setTimeout(() => {
+          webRef.current?.injectJavaScript(`
+            (function() {
+              try {
+                var cu = localStorage.getItem('currentUser');
+                var parsed = cu ? JSON.parse(cu) : {};
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'WEB_AUTH_TOKENS',
+                  auth_token: parsed.auth_token || parsed.authToken || localStorage.getItem('auth_token') || '',
+                  device_token: parsed.device_token || parsed.deviceToken || localStorage.getItem('device_token') || '',
+                }));
+              } catch(e) {}
+            })(); true;
+          `);
+        }, 800);
+      }
       return;
     }
 
@@ -1981,6 +2081,7 @@ function AppContent() {
         STORAGE_KEYS.SAVE_WEB_URL,
         TRACKING_STORAGE.AUTH_TOKEN,
         TRACKING_STORAGE.DEVICE_TOKEN,
+        'user_role',
       ]);
       wasLoggedInRef.current = false;
       setShowWeb(false);
@@ -2003,28 +2104,174 @@ function AppContent() {
     true;
   `;
 
-  // JSON.stringify produces a properly quoted-and-escaped JS string literal —
-  // safe against ', ", \, \n, and Unicode in user input.
-  const safeMobile = JSON.stringify(mobileNo);
-  const safePassword = JSON.stringify(password);
-  const safeUserType = JSON.stringify(userType);
+  // EARLY LOADER HANDOFF (single-org doctors). After submit, native auth confirms
+  // the login succeeded in ~4s, but a single-org doctor's web flow keeps the URL
+  // on /login for ~40s while it bootstraps the entire /patients app — so the URL
+  // never changes and our loader would sit up the whole time. This probe watches
+  // the DOM and, the instant real app content paints (toolbar/sidenav/table) with
+  // the login form GONE, tells native to hide the loader — handing the user over
+  // to the web app's own loading UI ~35s earlier. It NEVER reveals the login form
+  // (guarded on #mobile_no) or a blank screen (requires positive content), and it
+  // has NO timeout-reveal (silently gives up so the URL-nav path still finalizes).
+  const loginHandoffProbeScript = `
+  (function loginHandoff() {
+    var POLL_INTERVAL = 500;
+    var MAX_WAIT = 120000;
+    var startTime = Date.now();
+    var lastDebug = -99999;
 
-  const autoFillScript = `
+    function formPresent() {
+      return !!(document.getElementById('mobile_no') ||
+        document.getElementById('mat-button-toggle-1-button') ||
+        document.getElementById('mat-button-toggle-2-button'));
+    }
+    function contentPresent() {
+      return !!(
+        document.querySelector('mat-toolbar') ||
+        document.querySelector('mat-sidenav-container') ||
+        document.querySelector('mat-sidenav') ||
+        document.querySelector('[class*="sidebar"]') ||
+        document.querySelector('table') ||
+        document.querySelector('mat-card') ||
+        document.querySelector('mat-list-item') ||
+        document.querySelector('mat-selection-list'));
+    }
+    function spinnerPresent() {
+      return !!(
+        document.querySelector('mat-spinner') ||
+        document.querySelector('mat-progress-spinner') ||
+        document.querySelector('mat-progress-bar') ||
+        document.querySelector('[class*="spinner"]') ||
+        document.querySelector('[class*="loading"]') ||
+        document.querySelector('[class*="loader"]'));
+    }
+    function tokenPresent() {
+      try {
+        var cu = localStorage.getItem('currentUser');
+        if (cu) { var p = JSON.parse(cu); if (p && (p.auth_token || p.authToken)) return true; }
+        if (localStorage.getItem('auth_token')) return true;
+      } catch (e) {}
+      return false;
+    }
+    function post(obj) {
+      try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}
+    }
+
+    function tick() {
+      var fp = formPresent();
+      var cp = contentPresent();
+      // SAFE handoff: real app content painted AND the login form is gone.
+      if (document.readyState === 'complete' && cp && !fp) {
+        post({ type: 'LOGIN_HANDOFF', waited: Date.now() - startTime });
+        return;
+      }
+      // Diagnostic pulse every ~4s so native can see what the web is showing
+      // during the long single-org wait (is it authed early? spinner over form?).
+      var now = Date.now();
+      if (now - lastDebug > 4000) {
+        lastDebug = now;
+        post({
+          type: 'HANDOFF_DEBUG',
+          t: now - startTime,
+          form: fp,
+          content: cp,
+          spinner: spinnerPresent(),
+          token: tokenPresent(),
+          rs: document.readyState,
+        });
+      }
+      if (now - startTime > MAX_WAIT) return; // give up silently
+      setTimeout(tick, POLL_INTERVAL);
+    }
+    tick();
+  })();
+  true;
+  `;
+
+  // Polls the org-selection page until it has rendered real, interactive
+  // content (not just a spinner), then signals native via WEB_READY so the
+  // loader can be hidden the moment content paints — without a blank flash.
+  // A fixed fallback in the load handlers covers the case this never fires.
+  const webReadyProbeScript = `
+  (function webReady() {
+    var POLL_INTERVAL = 150;
+    var MAX_WAIT = 5000;
+    var startTime = Date.now();
+
+    function hasContent() {
+      if (document.readyState !== 'complete') return false;
+
+      // Login page is still mounted (mid-transition) — NOT ready. The login
+      // submit button shares the 'button.submit-button' selector, so without
+      // this guard the probe fires WEB_READY against the login DOM and the
+      // loader lifts to reveal the login page (single-org doctors skip the
+      // org page and hit this transition directly).
+      var onLoginPage =
+        document.getElementById('mobile_no') ||
+        document.getElementById('mat-button-toggle-1-button') ||
+        document.getElementById('mat-button-toggle-2-button');
+      if (onLoginPage) return false;
+
+      var el =
+        // Org-selection page
+        document.querySelector('mat-card') ||
+        document.querySelector('[class*="organization"]') ||
+        document.querySelector('mat-list-item') ||
+        document.querySelector('mat-selection-list') ||
+        // Main app shell (single-org doctors land straight on /patients)
+        document.querySelector('mat-toolbar') ||
+        document.querySelector('mat-sidenav-container') ||
+        document.querySelector('mat-sidenav') ||
+        document.querySelector('[class*="sidebar"]') ||
+        document.querySelector('table');
+      return !!el;
+    }
+
+    function tick() {
+      var ready = hasContent();
+      var timedOut = Date.now() - startTime > MAX_WAIT;
+      if (ready || timedOut) {
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'WEB_READY',
+            waited: Date.now() - startTime,
+            reason: ready ? 'content' : 'timeout',
+          }));
+        } catch (e) {}
+        return;
+      }
+      setTimeout(tick, POLL_INTERVAL);
+    }
+    tick();
+  })();
+  true;
+  `;
+
+  // Builds the auto-fill injection script with actual credential values baked in.
+  // Called at login time (not at render time) so values are always fresh.
+  const buildAutoFillScript = (mobile: string, pass: string, uType: string): string => {
+    const safeMobile = JSON.stringify(mobile);
+    const safePassword = JSON.stringify(pass);
+    const safeUserType = JSON.stringify(uType);
+    return `
   (function autoLogin() {
     var mobileNo = ${safeMobile};
     var password = ${safePassword};
     var verificationType = ${safeUserType};
 
-    // Skip entirely when we have no credentials to fill (e.g. cold-restart
-    // landing on /login). Prevents spurious clicks on a disabled button.
+    // Nothing to fill — bail (defensive; always called with credentials).
     if (!mobileNo || !password) return;
 
     var POLL_INTERVAL = 250;     // re-check form readiness ~4x/sec
-    var MAX_WAIT = 30000;        // keep polling for the form up to this ceiling
+    // Poll for the form up to this ceiling. Injected on press (before the page is
+    // ready) it must outlast a slow /login load — measured up to ~108s — so it
+    // fills the instant the form appears instead of giving up early.
+    var MAX_WAIT = 120000;
 
     var startTime = Date.now();
     var submitted = false;
     var typeSelected = false;
+    var filled = false;
 
     // Bridge auto-fill progress + timing back to native so it shows in Metro
     // logs alongside the [LOGIN] markers (the webview console isn't visible there).
@@ -2035,6 +2282,19 @@ function AppContent() {
     }
 
     report('script injected, polling for form');
+
+    // Guard against DOUBLE SUBMIT. handleLogin injects once (warm page) and
+    // handleLoadEnd re-injects on the next /login load event — but if the page
+    // did NOT actually reload, that second injection would re-fill and re-click
+    // the SAME live form, submitting the login twice. A double submit makes the
+    // web SPA restart/stall its login (single-org doctors bootstrap the whole
+    // /patients app inline, so this cost 85s in the field). A GENUINE post-submit
+    // reload clears window.__hrAutoLoginSubmitted, so the intended re-fill path
+    // still works; only same-page re-injection is blocked here.
+    if (window.__hrAutoLoginSubmitted) {
+      report('duplicate injection on same page — already submitted, skipping');
+      return;
+    }
 
     function selectUserType() {
       var doctorButton = document.getElementById('mat-button-toggle-1-button');
@@ -2084,7 +2344,7 @@ function AppContent() {
         document.querySelector('#mat-input-1');
       var loginButton = document.querySelector('button.submit-button');
 
-      // Form not rendered yet — keep waiting instead of giving up (slow-SPA fix).
+      // Form not rendered yet — keep polling instead of giving up.
       if (!mobileInput || !passwordInput || !loginButton) {
         report('form not ready, re-poll', {
           mobile: !!mobileInput, password: !!passwordInput, button: !!loginButton,
@@ -2100,13 +2360,22 @@ function AppContent() {
         report('user-type toggle selected: ' + verificationType);
       }
 
-      setNativeValue(mobileInput, mobileNo);
-      setNativeValue(passwordInput, password);
-      report('fields filled', { buttonDisabled: loginButton.disabled });
+      // Fill the fields EXACTLY ONCE. Re-dispatching input/change/blur on every
+      // poll restarts the web form's async (backend) validator each tick, so the
+      // submit button never settles to enabled — a self-inflicted stall on slow
+      // networks. After the one-time fill we only READ button.disabled; we never
+      // re-fire events. Angular already has the value + validity from the first fill.
+      if (!filled) {
+        setNativeValue(mobileInput, mobileNo);
+        setNativeValue(passwordInput, password);
+        filled = true;
+        report('fields filled (once)', { buttonDisabled: loginButton.disabled });
+      }
 
-      // Button may still be disabled until Angular validates — re-tick.
+      // Button may still be disabled until Angular finishes validating — re-tick,
+      // but do NOT re-fill (see above).
       if (loginButton.disabled) {
-        report('submit still DISABLED — waiting for validation, re-poll');
+        report('submit still DISABLED — waiting for validation, re-poll (no refill)');
         setTimeout(tick, POLL_INTERVAL);
         return;
       }
@@ -2118,6 +2387,7 @@ function AppContent() {
       // Genuine failures (wrong password) are caught by the native login timeout.
       loginButton.click();
       submitted = true;
+      window.__hrAutoLoginSubmitted = true; // block re-submit on same page instance
       var clickedAt = Date.now();
       report('✓ SUBMIT CLICKED — waiting for web login (single submit)');
 
@@ -2137,49 +2407,7 @@ function AppContent() {
   })();
   true;
   `;
-
-  // Polls the org-selection page until it has rendered real, interactive
-  // content (not just a spinner), then signals native via WEB_READY so the
-  // loader can be hidden without flashing a blank page. A 1500ms native
-  // fallback covers the case where this never fires.
-  const webReadyProbeScript = `
-  (function webReady() {
-    var POLL_INTERVAL = 150;
-    var MAX_WAIT = 5000;
-    var startTime = Date.now();
-
-    function hasContent() {
-      if (document.readyState !== 'complete') return false;
-      // Any rendered org card / list item / actionable control means the
-      // page has painted past its initial loading state.
-      var el =
-        document.querySelector('mat-card') ||
-        document.querySelector('[class*="organization"]') ||
-        document.querySelector('mat-list-item') ||
-        document.querySelector('button.submit-button') ||
-        document.querySelector('mat-selection-list');
-      return !!el;
-    }
-
-    function tick() {
-      var ready = hasContent();
-      var timedOut = Date.now() - startTime > MAX_WAIT;
-      if (ready || timedOut) {
-        try {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'WEB_READY',
-            waited: Date.now() - startTime,
-            reason: ready ? 'content' : 'timeout',
-          }));
-        } catch (e) {}
-        return;
-      }
-      setTimeout(tick, POLL_INTERVAL);
-    }
-    tick();
-  })();
-  true;
-  `;
+  };
 
   /* ================= WEB VIEW ================= */
 
@@ -2204,13 +2432,104 @@ function AppContent() {
     );
   }
 
+  // Show the system location permission popup.
+  // Falls back to App Settings only when permanently denied (OS blocks the dialog).
+  const requestLocationPermission = async () => {
+    if (Platform.OS === 'android') {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        {
+          title: 'Location Permission',
+          message: 'HealthRay needs your location to track your position.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
+        },
+      );
+      if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        await openAppSettings();
+      } else {
+        const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+        webRef.current?.injectJavaScript(`
+          (function() {
+            window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+              detail: { granted: ${granted} }
+            }));
+          })(); true;
+        `);
+      }
+    } else {
+      const auth = await Geolocation.requestAuthorization('whenInUse');
+      const granted = auth === 'granted';
+      if (!granted) { await openAppSettings(); }
+      webRef.current?.injectJavaScript(`
+        (function() {
+          window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+            detail: { granted: ${granted} }
+          }));
+        })(); true;
+      `);
+    }
+  };
+
   const handleMessage = async (event: any) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
 
+      // ─── PREWARM_FORM_READY ───────────────────────────────────────────────
+      // The login form exists in the DOM — the page is USABLE now, well before
+      // onLoadEnd fires (which waits for the whole page, ~44s on /login). Mark it
+      // ready so an early Login tap injects the auto-fill immediately instead of
+      // waiting for the full page-load event.
+      if (message?.type === 'PREWARM_FORM_READY') {
+        if (!loginPageReadyRef.current) {
+          loginPageReadyRef.current = true;
+          const el = prewarmStartRef.current ? Date.now() - prewarmStartRef.current : 0;
+          console.log(
+            `[PREWARM] ✓ login FORM ready at +${el}ms (${(el / 1000).toFixed(1)}s) — usable now (onLoadEnd comes much later)`,
+          );
+        }
+        return;
+      }
+
       // ─── AUTOFILL_LOG (auto-fill progress bridged from the WebView) ──────
       if (message?.type === 'AUTOFILL_LOG') {
         logLogin(`[autofill +${message.t}ms] ${message.msg}`, message.extra ?? undefined);
+        // Submit just fired → start watching for the web app's real content so we
+        // can hand off the loader early (esp. single-org doctors, who sit on
+        // /login for ~40s while /patients bootstraps). Safe no-op on multi-org.
+        if (typeof message.msg === 'string' && message.msg.indexOf('SUBMIT CLICKED') !== -1) {
+          webRef.current?.injectJavaScript(loginHandoffProbeScript);
+        }
+        return;
+      }
+
+      // ─── HANDOFF_DEBUG (diagnostic: what the web shows during the long wait) ─
+      if (message?.type === 'HANDOFF_DEBUG') {
+        logLogin(`🔎 web state @+${message.t}ms`, {
+          form: message.form,       // login form still in DOM?
+          content: message.content, // real app content painted?
+          spinner: message.spinner, // web showing its own loader?
+          token: message.token,     // auth session stored in localStorage?
+          readyState: message.rs,
+        });
+        return;
+      }
+
+      // ─── LOGIN_HANDOFF ────────────────────────────────────────────────────
+      // The web app has painted real content (login form gone) while the URL may
+      // still be /login. Credentials are already confirmed valid natively, so hide
+      // the loader now and let the user watch the web app's own loading UI instead
+      // of our frozen loader. The URL-nav success path still finalizes login state.
+      if (message?.type === 'LOGIN_HANDOFF') {
+        if (loginInProgressRef.current && nativeAuthOkRef.current) {
+          const t = loginStartRef.current ? Date.now() - loginStartRef.current : 0;
+          logLogin('⏩ EARLY HANDOFF — web content painted, hiding loader before URL nav', {
+            waited: message.waited,
+            atMs: t,
+          });
+          console.log(`⏩ EARLY HANDOFF (loader hidden): ${t}ms (${(t / 1000).toFixed(1)}s)`);
+          setLoading(false);
+        }
         return;
       }
 
@@ -2234,7 +2553,7 @@ function AppContent() {
       // ─── PDF (existing) ──────────────────────────────────────────────────
       if (message?.type === 'pdf') {
         if (!message?.data) return;
-        const base64Data = message.data.replace('data:application/pdf;base64,', '');
+        const base64Data = message.data.replace(/^data:[^;]+;base64,/, '').trim();
 
         if (Platform.OS === 'android') {
           const folderPath =
@@ -2266,7 +2585,7 @@ function AppContent() {
         );
 
         if (!Number.isFinite(employeeId) || !Number.isFinite(organizationId)) {
-          console.warn('[HRMS] START_TRACKING missing employee_id or organization_id');
+          console.log('[HRMS] START_TRACKING missing employee_id or organization_id');
           return;
         }
 
@@ -2285,6 +2604,35 @@ function AppContent() {
         return;
       }
 
+      if (message?.type === 'WEB_AUTH_TOKENS') {
+        console.log('[WEB_AUTH_TOKENS] ── message received ──');
+
+        const authToken: string = message?.auth_token ?? '';
+        const webDeviceToken: string = message?.device_token ?? '';
+        const nativeFcmToken = fcmTokenRef.current || await getFCMToken();
+
+        console.log('[WEB_AUTH_TOKENS] auth_token :', authToken ? `${authToken.slice(0, 10)}...` : 'EMPTY');
+        console.log('[WEB_AUTH_TOKENS] web_device_token:', webDeviceToken ? `${webDeviceToken}` : 'EMPTY');
+        console.log('[WEB_AUTH_TOKENS] native_fcm_token:', nativeFcmToken ? `${nativeFcmToken}` : 'EMPTY');
+
+        if (!authToken) {
+          console.log('[WEB_AUTH_TOKENS] ⚠ auth_token empty — web localStorage key may differ, token not synced');
+          return;
+        }
+        if (!nativeFcmToken) {
+          console.log('[WEB_AUTH_TOKENS] ⚠ native FCM token empty — Firebase not initialised yet, token not synced');
+          return;
+        }
+
+        // Invitee is staff, not driver — user_role = 'staff'
+        // Store web device_token so syncDeviceToken can send it as X-Device-Token
+        await rememberSession(authToken, false, webDeviceToken);
+        // Replace the web token in the auth_tokens row with the native FCM token
+        await syncDeviceToken(nativeFcmToken);
+        console.log('[WEB_AUTH_TOKENS] ✅ native FCM token synced to backend via refresh_token');
+        return;
+      }
+
       // ─── CURRENT_USER_DATA ───────────────────────────────────────────────
       if (message?.type === 'CURRENT_USER_DATA') {
         const user = message?.data ?? null;
@@ -2299,11 +2647,30 @@ function AppContent() {
         return;
       }
 
+      // ─── OPEN_LOCATION_SETTINGS (web retryGpsLostSession bridge) ───────────
+      if (message?.type === 'OPEN_LOCATION_SETTINGS') {
+        await requestLocationPermission();
+        return;
+      }
+
+      // ─── REQUEST_LOCATION_PERMISSION (generic one-shot permission request) ─
+      if (message?.type === 'REQUEST_LOCATION_PERMISSION') {
+        const granted = await hrmsTracker.requestPermission();
+        webRef.current?.injectJavaScript(`
+          (function() {
+            window.dispatchEvent(new CustomEvent('nativeLocationPermission', {
+              detail: { granted: ${granted} }
+            }));
+          })(); true;
+        `);
+        return;
+      }
+
       // ─── GET_LOCATION (one-shot bridge for navigator.geolocation) ────────
       if (message?.type === 'GET_LOCATION') {
         const callbackId: string = message?.data?.callbackId ?? '';
         if (!/^geo_\d+_\d+$/.test(callbackId)) {
-          console.warn('[HRMS] GET_LOCATION rejected — invalid callbackId shape');
+          console.log('[HRMS] GET_LOCATION rejected — invalid callbackId shape');
           return;
         }
         Geolocation.getCurrentPosition(
@@ -2354,10 +2721,17 @@ function AppContent() {
       reader.readAsDataURL(blob);
     }
 
+    const isPdf = function(blob) {
+      return blob && blob.type === 'application/pdf';
+    };
+
     const originalOpen = window.open;
     window.open = function(url) {
       if (url && url.startsWith('blob:')) {
-        fetch(url).then(res => res.blob()).then(blob => sendBlob(blob));
+        fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
+          if (isPdf(blob)) { sendBlob(blob); }
+          else { originalOpen.call(window, url); }
+        });
         return null;
       }
       return originalOpen.apply(this, arguments);
@@ -2366,14 +2740,16 @@ function AppContent() {
     document.addEventListener('click', function(e) {
       const element = e.target.closest('a');
       if (element && element.href && element.href.startsWith('blob:')) {
-        fetch(element.href).then(res => res.blob()).then(blob => sendBlob(blob));
         e.preventDefault();
+        fetch(element.href).then(function(res) { return res.blob(); }).then(function(blob) {
+          if (isPdf(blob)) { sendBlob(blob); }
+        });
       }
     });
 
     const originalCreateObjectURL = URL.createObjectURL;
     URL.createObjectURL = function(blob) {
-      sendBlob(blob);
+      if (isPdf(blob)) { sendBlob(blob); }
       return originalCreateObjectURL.apply(this, arguments);
     };
   })();
@@ -2447,51 +2823,54 @@ function AppContent() {
   true;
   `;
 
-  // WebView layer — mounted once `bootResolved`, kept mounted across the
-  // login → web transition so the Angular SPA boots (pre-warms) behind the
-  // native login screen and is never remounted (a remount discards the warm
-  // page). Hidden + non-interactive until `showWeb` reveals it.
-  const webViewLayer = bootResolved ? (
-    <View style={StyleSheet.absoluteFill} pointerEvents={showWeb ? 'auto' : 'none'}>
-      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        <WebView
-          ref={webRef}
-          source={{ uri: initialWebUrl }}
-          style={{ flex: 1, opacity: showWeb && !loading ? 1 : 0 }}
-          javaScriptEnabled
-          domStorageEnabled
-          cacheEnabled
-          cacheMode="LOAD_DEFAULT"
-          mixedContentMode="always"
-          injectedJavaScript={combinedScript}
-          scalesPageToFit={false}
-          setBuiltInZoomControls={false}
-          setDisplayZoomControls={false}
-          bounces={false}
-          scrollEnabled={true}
-          onMessage={handleMessage}
-          onLoadEnd={handleLoadEnd}
-          onNavigationStateChange={handleNavigationStateChange}
-          onError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent); }}
-          onHttpError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onHttpError', { code: e?.nativeEvent?.statusCode, url: e?.nativeEvent?.url }); }}
-        />
-
-        {/* Spinner during the web-side login (after reveal, before the org
-            page is ready) so the wait isn't a blank white screen. */}
-        {showWeb && loading && (
-          <View style={styles.overlay}>
-            <LottieView
-              source={require('./src/common/Loader.json')}
-              autoPlay
-              loop
-              style={styles.lottie}
-            />
-            <Text style={styles.loaderText}>Signing you in…</Text>
-          </View>
-        )}
-      </SafeAreaView>
-    </View>
-  ) : null;
+  // Runs at the EARLIEST point of every page load (before content). Besides the
+  // isNativeApp flag, it polls for the login FORM (#mobile_no) and signals native
+  // the instant the form exists — WITHOUT waiting for onLoadEnd. onLoadEnd only
+  // fires when the WHOLE page (every image/font/trailing request) finishes, which
+  // on /login was measured at ~44s even though the form is interactive in a few
+  // seconds. Keying "page ready" off the form (not onLoadEnd) means a user who
+  // taps Login early gets the auto-fill injected immediately instead of waiting
+  // for the full page-load event. Harmless on non-login pages (never finds the
+  // form, self-stops at MAX_WAIT).
+  const beforeContentLoadedScript = `
+    window.isNativeApp = true;
+    // ─── SOLUTION 1: "page fully loaded" detector ────────────────────────────
+    // Per the flow spec, the /login page is only truly USABLE when ALL THREE of
+    // its interactive elements exist: the email/mobile input, the password input,
+    // AND the login button. Checking just #mobile_no (the old behaviour) could
+    // fire "ready" while the password field / submit button were still rendering,
+    // so an early auto-fill hit a half-built form. We poll ~7x/sec until all
+    // three are found, then signal native ONCE. Harmless on non-login pages
+    // (never finds the form, self-stops at MAX_WAIT).
+    (function formReady() {
+      var start = Date.now();
+      var MAX_WAIT = 120000;
+      function isFormReady() {
+        var emailInput = document.getElementById('mobile_no');
+        var passwordInput =
+          document.querySelector('input[type="password"]') ||
+          document.querySelector('#mat-input-1');
+        var loginButton = document.querySelector('button.submit-button');
+        return !!(emailInput && passwordInput && loginButton);
+      }
+      function tick() {
+        try {
+          if (isFormReady() &&
+              window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'PREWARM_FORM_READY',
+              waited: Date.now() - start,
+            }));
+            return;
+          }
+        } catch (e) {}
+        if (Date.now() - start > MAX_WAIT) return;
+        setTimeout(tick, 150);
+      }
+      tick();
+    })();
+    true;
+  `;
 
   const renderMobileUI = () => (
     <>
@@ -2579,7 +2958,103 @@ function AppContent() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+    </>
+  );
 
+  /* ================= UNIFIED RENDER ================= */
+  // The WebView is mounted as soon as the user is confirmed NOT logged in
+  // (preWarmMode=true) so the /login page loads in the background while the
+  // user fills their credentials. When showWeb becomes true, the same instance
+  // becomes visible — no cold-mount penalty after login.
+  return (
+    <View style={{ flex: 1 }}>
+
+      {/* WebView — always mounted during pre-warm or active session */}
+      {(preWarmMode || showWeb) && (
+        <View
+          style={[StyleSheet.absoluteFill, !showWeb && { opacity: 0 }]}
+          pointerEvents={showWeb ? 'auto' : 'none'}
+        >
+          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+            <WebView
+              ref={webRef}
+              source={{ uri: initialWebUrl }}
+              style={{ flex: 1 }}
+              javaScriptEnabled
+              domStorageEnabled
+              cacheEnabled
+              mixedContentMode="always"
+              injectedJavaScriptBeforeContentLoaded={beforeContentLoadedScript}
+              injectedJavaScript={combinedScript}
+              scalesPageToFit={false}
+              setBuiltInZoomControls={false}
+              setDisplayZoomControls={false}
+              bounces={false}
+              scrollEnabled={true}
+              originWhitelist={['https://*', 'http://*', 'app-settings:*']}
+              onMessage={handleMessage}
+              onLoadEnd={handleLoadEnd}
+              onNavigationStateChange={handleNavigationStateChange}
+              onError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent); }}
+              onHttpError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onHttpError', { code: e?.nativeEvent?.statusCode, url: e?.nativeEvent?.url }); }}
+              onShouldStartLoadWithRequest={(request) => {
+                if (request.url.startsWith('app-settings:')) {
+                  requestLocationPermission();
+                  return false;
+                }
+                return true;
+              }}
+            />
+          </SafeAreaView>
+        </View>
+      )}
+
+      {/* Login UI — shown on top of hidden pre-warm WebView */}
+      {!showWeb && (
+        <KeyboardAvoidingView
+          style={{ flex: 1, backgroundColor: '#fff' }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
+        >
+          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+            {IS_TABLET ? (
+              <>
+                <View style={styles.header}>
+                  <Text style={styles.headerTitle}>Login Here</Text>
+                </View>
+                <View style={{ flex: 1, flexDirection: 'row' }}>
+                  <View style={styles.tabletLeft}>
+                    <Image
+                      source={require('./src/common/BannerLogo.png')}
+                      style={styles.tabletImage}
+                      resizeMode="contain"
+                    />
+                  </View>
+                  <View style={styles.tabletRight}>
+                    {renderMobileUI()}
+                  </View>
+                </View>
+              </>
+            ) : (
+              renderMobileUI()
+            )}
+          </SafeAreaView>
+        </KeyboardAvoidingView>
+      )}
+
+      {/* Loading overlay — covers both WebView and login screen */}
+      {loading && (
+        <View style={styles.overlay}>
+          <LottieView
+            source={require('./src/common/Loader.json')}
+            autoPlay
+            loop
+            style={styles.lottie}
+          />
+        </View>
+      )}
+
+      {/* No Internet modal — single instance, works in any app state */}
       <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
@@ -2593,68 +3068,7 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-    </>
-  );
 
-  /* ================= ROOT RENDER ================= */
-  // The WebView layer is always mounted (warming) behind the login UI. The
-  // login UI is rendered on top, with an opaque background, only until
-  // `showWeb` reveals the WebView.
-  return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
-      {webViewLayer}
-
-      {!showWeb && (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#fff' }]}>
-          <KeyboardAvoidingView
-            style={{ flex: 1, backgroundColor: '#fff' }}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-          >
-            <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-              {IS_TABLET ? (
-                <>
-                  <View style={styles.header}>
-                    <Text style={styles.headerTitle}>Login Here</Text>
-                  </View>
-                  <View style={{ flex: 1, flexDirection: 'row' }}>
-                    <View style={styles.tabletLeft}>
-                      <Image
-                        source={require('./src/common/BannerLogo.png')}
-                        style={styles.tabletImage}
-                        resizeMode="contain"
-                      />
-                    </View>
-                    <View style={styles.tabletRight}>
-                      {renderMobileUI()}
-                    </View>
-                  </View>
-                </>
-              ) : (
-                renderMobileUI()
-              )}
-            </SafeAreaView>
-          </KeyboardAvoidingView>
-        </View>
-      )}
-
-      {/* No-Internet modal for the web session (the login UI renders its own
-          inside renderMobileUI). Single instance avoids a duplicate modal. */}
-      {showWeb && (
-        <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>No Internet</Text>
-              <Text style={styles.modalText}>
-                Please check your internet connection
-              </Text>
-              <TouchableOpacity style={[styles.button, { paddingHorizontal: 12 }]}>
-                <Text style={styles.buttonText}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
-      )}
     </View>
   );
 }
