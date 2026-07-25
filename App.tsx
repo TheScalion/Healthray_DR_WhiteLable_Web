@@ -3,24 +3,17 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import messaging from '@react-native-firebase/messaging';
 import notifee, { EventType } from '@notifee/react-native';
 import { initFCM, getFCMToken } from './src/services/fcmService';
-import { showCallNotification } from './src/services/notificationHandler';
 import { rememberSession, syncDeviceToken, configureApiBase } from './src/services/deviceToken';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
-  Image,
   StyleSheet,
-  Alert,
   StatusBar,
   useColorScheme,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Dimensions,
-  ScrollView,
-  Keyboard,
   NativeModules,
   PermissionsAndroid,
   AppState,
@@ -37,13 +30,11 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useNetInfo } from "@react-native-community/netinfo";
 import NetInfo from "@react-native-community/netinfo";
 import CryptoJS from 'crypto-js';
-import Icon from 'react-native-vector-icons/MaterialIcons';
 import DeviceInfo from 'react-native-device-info';
 import axios from 'axios';
 import { Linking } from 'react-native';
 import Share from 'react-native-share';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import LottieView from 'lottie-react-native';
 import Geolocation from 'react-native-geolocation-service';
 
 // ─── Environment ─────────────────────────────────────────────────────────────
@@ -60,53 +51,14 @@ const WEB_BASE = IS_STAGING
   ? 'https://devfront.healthray.com'
   : 'https://ray.healthray.com';
 
-const LOGIN_URL = `${WEB_BASE}/login`;
-const SIGN_IN_URL = `${API_BASE}/api/v2/users/sign_in`;
+// WebView-only: the app loads WEB_BASE (root) and the web app handles auth
+// itself. We only need to recognise the web login route so we can (a) trigger
+// the auth-token sync when the user is on an authenticated page and (b) tear
+// down tracking when the web logs out / the session expires.
+const WEB_LOGIN_PATH = '/login';
+const isOnLoginPage = (url: string): boolean =>
+  !!url && url.toLowerCase().includes(WEB_LOGIN_PATH);
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ─── SOLUTION 2: login-success URL detection ─────────────────────────────────
-// A login is considered successful when the web app redirects AWAY from /login.
-// Two signals, matching the flow spec:
-//   1. The URL hits a known post-login endpoint — /select-organization,
-//      /select-* (org/patient pickers), or any of the landing routes a
-//      single-org doctor / staff / driver drops onto directly.
-//   2. FALLBACK: the URL simply changed to anything other than /login. This
-//      catches every future/unknown landing route without needing to enumerate
-//      it. During the brief server round-trip the web app keeps the URL on
-//      /login, so this never false-fires mid-authentication.
-// `path` may be a full URL or a pathname; we lower-case + substring-match so it
-// works with either. Query strings and hashes are tolerated.
-const POST_LOGIN_URL_HINTS = [
-  '/select-organization',
-  '/patient',
-  '/calendar',
-  '/dashboard',
-];
-
-const isLoginSuccessUrl = (url: string): boolean => {
-  if (!url) return false;
-  const u = url.toLowerCase();
-  // Still on the login page (including the transient reload during auth) → not done.
-  if (u.includes('/login')) return false;
-  // Left /login entirely → success (covers /select-* and every other route).
-  return true;
-};
-
-// True only for the explicitly-recognised post-login endpoints. Used for logging
-// / fast-path decisions; success itself is governed by isLoginSuccessUrl above.
-const isKnownPostLoginUrl = (url: string): boolean => {
-  if (!url) return false;
-  const u = url.toLowerCase();
-  console.log('[isKnownPostLoginUrl] checking', u);
-  if (u.includes('/login')) return false;
-  return POST_LOGIN_URL_HINTS.some((hint) => u.includes(hint));
-};
-
-const STORAGE_KEYS = {
-  ONLY_WEB: "ONLY_WEB",
-  SAVE_WEB_URL: "SAVE_WEB_URL",
-  IS_LOGGED_IN: "IS_LOGGED_IN",
-};
 
 // ─── HRMS tracking constants ─────────────────────────────────────────────────
 // Native owns auth + base URL, so the WebView never sends them in the
@@ -1435,15 +1387,8 @@ async function openAppSettings(): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SECRET_KEY = 'YsF&7B@34$+0A@408$B3x62&62';
 const { width } = Dimensions.get('window');
 const IS_TABLET = width >= 768;
-
-const BASE_URL = `${API_BASE}/api/v1/`;
-const BUILD_MANAGMENT_API = 'build_management/check_update_required';
-
-const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
-const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
 
 export default function App() {
   const mode = useColorScheme();
@@ -1461,89 +1406,63 @@ function AppContent() {
   console.log("App Rendered ==========================");
   const webRef = useRef<WebViewType>(null);
 
-  const wasLoggedInRef = useRef(false);
-  const lastWebUrlRef = useRef<string>('');
-  const loginTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const postLoginFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null); // hidePostLoginLoader's 1500ms fallback
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
-  const loginPageReadyRef = useRef(false);   // /login DOM has loaded (pre-warm may set early)
-  const loginInProgressRef = useRef(false);  // a login is awaiting its web result
-  const autofillRetryRef = useRef(0);        // reloads done after AUTOFILL_FORM_NOT_FOUND (max 1)
   const canGoBackRef = useRef(false);        // WebView has history (for Android hardware back)
   const webErroredRef = useRef(false);       // WebView had a load error → reload on reconnect
-  const loginStartRef = useRef<number>(0);   // ms timestamp of Login press (for elapsed-time logs)
-  const prewarmStartRef = useRef<number>(0); // ms timestamp pre-warm began (WebView mounted at /login)
-  const prewarmLoadCountRef = useRef(0);     // how many FULL /login loads the pre-warm did (each = full Angular boot)
-  const nativeAuthOkRef = useRef(false);     // native sign_in confirmed the credentials are valid (or web-gated)
-  const loginTypeRef = useRef<string>('Doctor'); // userType captured at login (for post-login handling)
   const fcmTokenRef = useRef<string>('');    // cached FCM device token (for WEB_AUTH_TOKENS sync)
+  const authSyncedRef = useRef(false);       // web auth token pulled into AsyncStorage this session
+  const lastBackPressRef = useRef(0);        // ms timestamp of last root back-press (double-tap-to-exit)
+  const splashHiddenRef = useRef(false);     // BootSplash.hide() called exactly once
 
   const { isConnected, isInternetReachable } = useNetInfo();
 
-  const [showWeb, setShowWeb] = useState(false);
-  const [initialWebUrl, setInitialWebUrl] = useState(LOGIN_URL);
-  const [mobileNo, setMobileNo] = useState<string>("");
-  const [password, setPassword] = useState<string>("");
-  const [userType, setUserType] = useState('Doctor');
-  const [passwordVisible, setPasswordVisible] = useState(false);
-  const [loading, setLoading] = useState(false);
-  // Staged status line under the loader ("Signing you in…" → "Loading your
-  // workspace…") so the long single-org bootstrap (~40s measured) reads as
-  // progress instead of a frozen animation.
-  const [loadingStatus, setLoadingStatus] = useState('');
-  const [preWarmMode, setPreWarmMode] = useState(false);
-  const [mobileNoError, setMobileNoError] = useState<string | null>(null);
+  const [initialWebUrl, setInitialWebUrl] = useState(`${WEB_BASE}/`);
   const [netInfoReady, setNetInfoReady] = useState(false);
   const showInternetModel = netInfoReady && isConnected === false;
 
-  const [userBasicData, setUserBasicData] = useState<any>(null);
-  const [showMaintenance, setShowMaintenance] = useState(false);
-  const [maintenanceMessage, setMaintenanceMessage] = useState('');
-  const [currentUser, setCurrentUser] = useState<any>(null);
-
-  const getStoreUrl = () => {
-    if (Platform.OS === 'ios') {
-      return userBasicData?.ios_app_url && userBasicData.ios_app_url !== ''
-        ? userBasicData.ios_app_url
-        : ITUNES_URL;
-    }
-    return userBasicData?.android_app_url && userBasicData.android_app_url !== ''
-      ? userBasicData.android_app_url
-      : PLAYSTORE_URL;
-  };
-
-
-  useEffect(() => {
-    (async () => {
-      const [savedUrl, isLoggedIn] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEYS.SAVE_WEB_URL),
-        AsyncStorage.getItem(STORAGE_KEYS.IS_LOGGED_IN),
-      ]);
-
-      if (isLoggedIn === "true") {
-        wasLoggedInRef.current = true;
-        setInitialWebUrl(savedUrl ?? LOGIN_URL);
-        setShowWeb(true);
-      } else {
-        // Pre-warm the WebView at /login in the background while user fills credentials
-        prewarmStartRef.current = Date.now();
-        prewarmLoadCountRef.current = 0;
-        console.log('[PREWARM start] WebView mounting at /login — measuring full loads');
-        setPreWarmMode(true);
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
+  // Splash: dismiss it once the WebView paints its first page (see handleLoadEnd
+  // and the WebView onError handler). The safety timer guarantees the splash is
+  // never stuck if no load event fires (e.g. an offline cold start).
+  const hideSplashOnce = useCallback(() => {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
     RNBootSplash.hide({ fade: true });
   }, []);
 
-  // Hydrate currentUser from AsyncStorage so it's available immediately after app reopen
   useEffect(() => {
-    AsyncStorage.getItem(CURRENT_USER_KEY).then((raw) => {
-      if (raw) setCurrentUser(JSON.parse(raw));
-    });
+    const t = setTimeout(hideSplashOnce, 6000);
+    return () => clearTimeout(t);
+  }, [hideSplashOnce]);
+
+  // Pull the web session's auth token out of the WebView's localStorage and hand
+  // it to native (WEB_AUTH_TOKENS) so HRMS tracking + ambulance push stay
+  // authenticated without a native login. The web app stores everything under
+  // localStorage['currentUser'] as { auth_token, deviceToken, ... }. The reader
+  // retries because on a fresh login the nav event can beat Angular's write.
+  const syncWebAuthTokens = useCallback(() => {
+    webRef.current?.injectJavaScript(`
+      (function(){
+        var tries = 0;
+        function grab(){
+          try {
+            var cu = JSON.parse(localStorage.getItem('currentUser') || '{}') || {};
+            var auth = cu.auth_token || cu.authToken || localStorage.getItem('auth_token') || '';
+            var dev = cu.deviceToken || cu.device_token || localStorage.getItem('device_token') || '';
+            if (auth) {
+              var isDriver = !!(cu.isDriver ||
+                String(cu.user_type || cu.userType || cu.role || '').toLowerCase() === 'driver');
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'WEB_AUTH_TOKENS', auth_token: auth, device_token: dev, is_driver: isDriver
+              }));
+              return;
+            }
+          } catch(e) {}
+          if (++tries < 5) setTimeout(grab, 300);
+        }
+        grab();
+      })(); true;
+    `);
   }, []);
 
   useEffect(() => {
@@ -1627,9 +1546,9 @@ function AppContent() {
     isOnlineRef.current = isOnline;
 
     if (prevInternetRef.current === false && isOnline) {
-      if (loginInProgressRef.current) {
-        // in-flight login — a reload would throw it away; leave it alone
-      } else if (webErroredRef.current && webRef.current) {
+      // Back online: reload the WebView if its last load errored, so a page that
+      // failed while offline recovers automatically.
+      if (webErroredRef.current && webRef.current) {
         webErroredRef.current = false;
         webRef.current.reload();
       }
@@ -1644,14 +1563,6 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Login timers must not outlive the component (setState after unmount).
-  useEffect(() => {
-    return () => {
-      if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
-      if (postLoginFallbackRef.current) clearTimeout(postLoginFallbackRef.current);
-    };
-  }, []);
-
   // App foreground → drain HRMS buffer immediately
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextAppState) => {
@@ -1661,9 +1572,13 @@ function AppContent() {
         hrmsTracker.restartGPSIfDead();
         if (isOnlineRef.current) hrmsTracker.flushNow().catch(() => { });
       }
+      // Re-pull the web auth token on every foreground so a token the web/HRMS
+      // backend rotated while we were backgrounded is refreshed in native
+      // storage. The WEB_AUTH_TOKENS handler no-ops when the token is unchanged.
+      if (authSyncedRef.current) syncWebAuthTokens();
     });
     return () => sub.remove();
-  }, []);
+  }, [syncWebAuthTokens]);
 
   // ─── HRMS tracker: status emitter + resume on launch ───────────────────────
   useEffect(() => {
@@ -1683,18 +1598,17 @@ function AppContent() {
       }
 
       if (status === 'auth_expired') {
+        // Native token expired (tracking hit a 401). In a webview-only app there
+        // is no native login to fall back to, so DON'T reload or redirect the
+        // WebView. Clear the stale native token and try to re-read a possibly
+        // refreshed one from the still-live web session; if the web is also
+        // logged out it will navigate to /login and the logout path takes over.
         AsyncStorage.multiRemove([
-          STORAGE_KEYS.IS_LOGGED_IN,
-          STORAGE_KEYS.SAVE_WEB_URL,
           TRACKING_STORAGE.AUTH_TOKEN,
           TRACKING_STORAGE.DEVICE_TOKEN,
         ]).catch(() => { });
-        wasLoggedInRef.current = false;
-        setShowWeb(false);
-        // Keep the WebView mounted so the next Login press has a live webRef
-        // (same reasoning as the logout path in handleNavigationStateChange).
-        setPreWarmMode(true);
-        setLoading(false);
+        authSyncedRef.current = false;
+        syncWebAuthTokens();
       }
     });
 
@@ -1708,571 +1622,63 @@ function AppContent() {
   }, []);
 
 
-  const convertLocalTimeToUtcTime = () => {
-    const localTime = new Date();
-    const timezoneOffsetInMinutes = localTime.getTimezoneOffset();
-    const utcTime = new Date(
-      localTime.getTime() - timezoneOffsetInMinutes * 60000
-    );
-    return utcTime;
-  };
-
-  const encryptText = (plainTextString: string): string | null => {
-    console.log("JS encryptText: Input plaintext string:", plainTextString);
-    try {
-      const salt = CryptoJS.lib.WordArray.random(128 / 8);
-      const key = CryptoJS.PBKDF2(SECRET_KEY, salt, {
-        keySize: 256 / 32,
-        iterations: 1000,
-        hasher: CryptoJS.algo.SHA1,
-      });
-
-      let plainTextWordArray: CryptoJS.lib.WordArray;
-      if (typeof plainTextString === "string") {
-        plainTextWordArray = CryptoJS.enc.Utf8.parse(plainTextString);
-      } else {
-        plainTextWordArray = plainTextString as CryptoJS.lib.WordArray;
-      }
-
-      const encryptedCipherParams = CryptoJS.AES.encrypt(
-        plainTextWordArray,
-        key,
-        {
-          iv: salt,
-          mode: CryptoJS.mode.CBC,
-          padding: CryptoJS.pad.Pkcs7,
-        }
-      );
-
-      const saltHex = salt.toString(CryptoJS.enc.Hex);
-      const ciphertextBase64 = encryptedCipherParams.ciphertext.toString(
-        CryptoJS.enc.Base64
-      );
-      return saltHex + ciphertextBase64;
-    } catch (error) {
-      console.error("JS Encryption Error:", error);
-      return null;
-    }
-  };
-
-  const buildVersionManagement = async () => {
-    try {
-      const params = {
-        platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
-        current_version: DeviceInfo.getVersion(),
-        user_type: 'D',
-      };
-      const response = await axios.post(
-        `${BASE_URL}${BUILD_MANAGMENT_API}`,
-        params,
-        {
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          timeout: 15000,
-        }
-      );
-      handleBuildVersionResponse(response.data);
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.log('❌ Axios error message:', error.message);
-      } else {
-        console.log('❌ Unknown error:', error);
-      }
-    }
-  };
-
-  const handleBuildVersionResponse = (response: any) => {
-    const statusCode = response?.status;
-    const message = response?.message ?? '';
-    const data = response?.data ?? {};
-    setUserBasicData(data);
-
-    if (statusCode === 701) {
-      Alert.alert('Healthray', message,
-        [{ text: 'Update', onPress: () => Linking.openURL(getStoreUrl()) }],
-        { cancelable: false });
-      return;
-    }
-    if (statusCode === 702) {
-      Alert.alert('Healthray', message,
-        [{ text: 'Cancel', style: 'cancel' },
-        { text: 'Update', onPress: () => Linking.openURL(getStoreUrl()) }]);
-      return;
-    }
-    if (statusCode === 703) {
-      setMaintenanceMessage(message);
-      setShowMaintenance(true);
-      return;
-    }
-    console.log('✅ App is up to date');
-  };
-
-  // Elapsed-time login logger → "[LOGIN +123ms] message" (ms since Login press).
-  const logLogin = useCallback((msg: string, extra?: any) => {
-    const t = loginStartRef.current ? `+${Date.now() - loginStartRef.current}ms` : 'start';
-    if (extra !== undefined) console.log(`[LOGIN ${t}] ${msg}`, extra);
-    else console.log(`[LOGIN ${t}] ${msg}`);
-  }, []);
-
-  // ─── Login watchdog + failure teardown ──────────────────────────────────────
-  // Component scope (not closures inside handleLogin) because the WebView
-  // message handlers (AUTOFILL_FORM_NOT_FOUND, WEB_LOGIN_ERROR) drive them too.
-  const FIRST_CHECK_MS = 55000;
-  const RECHECK_MS = 15000;
-  const ABSOLUTE_MAX_MS = 180000; // 3 min hard ceiling even when creds are valid
-
-  // A finished attempt (failure or logout) can leave the still-alive /login
-  // page (SPA — nothing reloads it) with __hrAutoLoginSubmitted /
-  // __hrAutoFillPolling set, which would make the NEXT attempt's injection
-  // bail out at its guards and never fill. Reset them at attempt boundaries;
-  // within one attempt the guards still dedupe the multiple injection points.
-  const resetAutoFillPageFlags = useCallback(() => {
-    webRef.current?.injectJavaScript(
-      'window.__hrAutoLoginSubmitted = false; window.__hrAutoFillPolling = false; true;'
-    );
-  }, []);
-
-  const failLogin = useCallback(async (message?: string, silent = false) => {
-    if (!loginInProgressRef.current) return; // already failed or already succeeded
-    logLogin(silent ? '⎋ login cancelled — tearing down (silent)' : '✗ login failed — tearing down');
-    loginInProgressRef.current = false;
-    autofillRetryRef.current = 0;
-    resetAutoFillPageFlags();
-    // If the (still-mounted, hidden) WebView drifted off /login — e.g. a login
-    // that actually landed after we tore down — steer it back so the next
-    // attempt has a login form to fill. If the web session survived, /login
-    // redirects straight to a post-login page and the retry succeeds instantly.
-    if (lastWebUrlRef.current && !lastWebUrlRef.current.includes('/login')) {
-      webRef.current?.injectJavaScript(
-        `window.location.replace(${JSON.stringify(LOGIN_URL)}); true;`
-      );
-    }
-    await AsyncStorage.multiRemove([
-      STORAGE_KEYS.IS_LOGGED_IN,
-      STORAGE_KEYS.SAVE_WEB_URL,
-      TRACKING_STORAGE.AUTH_TOKEN,
-      TRACKING_STORAGE.DEVICE_TOKEN,
-    ]);
-    wasLoggedInRef.current = false;
-    setShowWeb(false);
-    setLoading(false);
-    if (!silent) {
-      Alert.alert(
-        "Login Failed",
-        message ??
-        "Something went wrong. Please try again or check your internet connection."
-      );
-    }
-  }, [logLogin, resetAutoFillPageFlags]);
-
-  const scheduleWatchdog = (delay: number) => {
-    if (loginTimeoutRef.current) clearTimeout(loginTimeoutRef.current);
-    loginTimeoutRef.current = setTimeout(async () => {
-      const currentUrl = lastWebUrlRef.current;
-      const elapsed = Date.now() - loginStartRef.current;
-      // Already left /login → normally handleNavigationStateChange finalized
-      // the login and cleared loginInProgressRef. If it is somehow still set
-      // (nav event raced/missed), finalize success HERE instead of returning
-      // silently — a bare return would leave the loader up with no exit left.
-      if (currentUrl && !currentUrl.includes("/login")) {
-        if (loginInProgressRef.current) {
-          logLogin('watchdog: URL left /login but success never finalized — finalizing now', {
-            currentUrl,
-          });
-          loginInProgressRef.current = false;
-          autofillRetryRef.current = 0;
-          wasLoggedInRef.current = true;
-          hidePostLoginLoader();
-          try {
-            await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
-          } catch { }
-        } else {
-          // Success was already handled elsewhere — but if the loader is
-          // somehow still up (hide path raced or threw), drop it now. This is
-          // the last line of defense; a no-op when the loader is already gone.
-          setLoading(false);
-        }
-        return;
-      }
-
-      if (nativeAuthOkRef.current && elapsed < ABSOLUTE_MAX_MS) {
-        logLogin('web login slow but credentials valid — still waiting', {
-          elapsedMs: elapsed,
-        });
-        scheduleWatchdog(RECHECK_MS);
-        return;
-      }
-      logLogin('⏱ watchdog: giving up', {
-        elapsedMs: elapsed,
-        nativeAuthOk: nativeAuthOkRef.current,
-      });
-      await failLogin();
-    }, delay);
-  };
-
-  // Android hardware back → step back through WebView history instead of
-  // exiting the app; falls through to the default (exit) when there is none.
-  // (Placed after failLogin — it appears in the dependency array.)
+  // Android hardware back → step back through WebView history; at the root
+  // (no web history) double-tap to exit so a stray back press doesn't drop the
+  // user out of the app.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      // Back during an in-flight login = cancel it and return to the native
-      // login screen, instead of exiting the app from behind the loader.
-      if (loginInProgressRef.current) {
-        logLogin('⎋ back pressed during login — cancelling');
-        if (loginTimeoutRef.current) {
-          clearTimeout(loginTimeoutRef.current);
-          loginTimeoutRef.current = null;
-        }
-        failLogin(undefined, true);
-        return true;
-      }
-      if (showWeb && canGoBackRef.current && webRef.current) {
+      if (canGoBackRef.current && webRef.current) {
         webRef.current.goBack();
         return true;
       }
-      return false;
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 2000) {
+        BackHandler.exitApp();
+        return true;
+      }
+      lastBackPressRef.current = now;
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      }
+      return true;
     });
     return () => sub.remove();
-  }, [showWeb, failLogin, logLogin]);
+  }, []);
 
-  const handleLogin = async () => {
-    if (loginInProgressRef.current) return; // double-tap → one flow only
-    if (!mobileNo || !password) {
-      Alert.alert("Error", "Enter mobile number & password");
-      return;
-    }
-    setMobileNoError(null);
-    if (mobileNo.length < 10) {
-      setMobileNoError("Please enter a valid mobile number.");
-      return;
-    }
-
-    loginStartRef.current = Date.now();
-    logLogin('▶ LOGIN PRESSED', {
-      userType,
-      mobileLen: mobileNo.length,
-      pageReady: loginPageReadyRef.current,
-      showWeb,
-      lastUrl: lastWebUrlRef.current || '(none)',
-    });
-
-    setLoading(true);
-    setLoadingStatus('Signing you in…');
-    Keyboard.dismiss();
-
-    loginInProgressRef.current = true;
-    autofillRetryRef.current = 0;
-    setInitialWebUrl(LOGIN_URL);
-    setShowWeb(true);
-
-    nativeAuthOkRef.current = false;
-    loginTypeRef.current = userType;
-    if (userType === 'Invitee' || IS_STAGING) {
-      nativeAuthOkRef.current = true;
-    }
-
-    // Arm the watchdog BEFORE anything that can throw (the injections below hit
-    // the native WebView bridge). Invariant: once the loader is visible, a
-    // watchdog exists — otherwise a throw here would leave it up forever.
-    scheduleWatchdog(FIRST_CHECK_MS);
-
-    // Inject the auto-fill IMMEDIATELY, whether or not the page reports "ready".
-    // The script polls for the form itself, so it fills + submits the moment the
-    // form appears — which is far earlier than onLoadEnd. onLoadEnd only fires
-    // when the ENTIRE /login page finishes (every image/font/trailing request);
-    // that was measured at 108s on a slow network, and deferring the auto-fill to
-    // it blocked login for the full 108s even though the form was usable long
-    // before. Injecting now + polling avoids that. onLoadEnd still (re)injects as
-    // a fallback, and the window.__hrAutoLoginSubmitted guard prevents any
-    // double-submit across the two injection points.
-    const fillScript = buildAutoFillScript(mobileNo, password, userType);
-    const offLoginPage =
-      !!lastWebUrlRef.current && !lastWebUrlRef.current.includes('/login');
-    try {
-      if (webRef.current && offLoginPage) {
-        // The WebView drifted off /login (e.g. a previous attempt's late success
-        // parked it on a post-login page). Injecting the poller there would just
-        // exit ("not on /login"). Steer back first; PREWARM_FORM_READY/onLoadEnd
-        // inject the auto-fill once the login form (re)appears — and if the web
-        // session is still alive, /login redirects straight to a post-login URL
-        // and the success path hides the loader immediately.
-        logLogin('webview off /login → steering back to login page first', {
-          at: lastWebUrlRef.current,
-        });
-        webRef.current.injectJavaScript(
-          `window.location.replace(${JSON.stringify(LOGIN_URL)}); true;`
-        );
-      } else if (webRef.current) {
-        logLogin(
-          loginPageReadyRef.current
-            ? 'page warm → injecting auto-fill NOW'
-            : 'page NOT ready → injecting auto-fill anyway (script self-polls for the form)',
-        );
-        webRef.current.injectJavaScript(fillScript);
-      } else {
-        // WebView is only mounting this render (e.g. right after a logout that
-        // unmounted it) — PREWARM_FORM_READY / onLoadEnd will inject instead.
-        logLogin('webRef not mounted yet → deferring auto-fill to PREWARM_FORM_READY/onLoadEnd');
-      }
-    } catch (e: any) {
-      // Injection failed (bridge to a torn-down WebView). PREWARM_FORM_READY /
-      // onLoadEnd re-inject later; the already-armed watchdog bounds the wait.
-      logLogin('⚠ auto-fill injection threw — relying on later injection points', e?.message ?? e);
-    }
-
-    if (userType !== 'Invitee' && !IS_STAGING) {
-      (async () => {
-        const apiStart = Date.now();
-        try {
-          logLogin('→ native sign_in: START');
-
-          let fcmToken = '';
-          try {
-            // Race against a short timeout: a hung Firebase (SERVICE_NOT_AVAILABLE
-            // seen in the field taking 3s+) must not delay the sign_in call.
-            // Empty token is fine — index.js onTokenRefresh / syncDeviceToken
-            // register it later.
-            fcmToken = await Promise.race<string>([
-              messaging().getToken(),
-              new Promise<string>((resolve) => setTimeout(() => resolve(''), 2000)),
-            ]);
-            if (fcmToken) fcmTokenRef.current = fcmToken;
-            else logLogin('FCM getToken timed out (2s) — continuing without token');
-          } catch (e) {
-            logLogin('FCM getToken error', (e as any)?.message ?? e);
-          }
-
-          const passwordPayload = JSON.stringify({
-            text: password,
-            time: convertLocalTimeToUtcTime(),
-          });
-          const encryptedPassword = encryptText(passwordPayload);
-          const payload = {
-            user: {
-              mobile_no: mobileNo,
-              password: encryptedPassword,
-              platform: Platform.OS === "android" ? "Android" : "iOS",
-              user_type: userType,
-            },
-          };
-
-          // Abort after 15s: on a black-hole network (connects, never responds)
-          // fetch can hang for minutes; the abort lands in the catch below and
-          // fast-fails the login instead of waiting for the 55s watchdog.
-          const abort = new AbortController();
-          const abortTimer = setTimeout(() => abort.abort(), 15000);
-          let res: Response;
-          try {
-            res = await fetch(SIGN_IN_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json",
-                device_token: fcmToken,
-              },
-              body: JSON.stringify(payload),
-              signal: abort.signal,
-            });
-          } finally {
-            clearTimeout(abortTimer);
-          }
-
-          const data = await res.json();
-          logLogin(`← native sign_in: RESPONSE in ${Date.now() - apiStart}ms`, {
-            httpStatus: res.status,
-            statusState: data?.statusState,
-            message: data?.message ?? '—',
-          });
-
-          if (!res.ok || data?.statusState !== "success") {
-            logLogin('✗ native sign_in FAILED', { webAlreadyLoggedIn: wasLoggedInRef.current });
-            // Wrong credentials → fast fail, unless the web login already
-            // succeeded (a native hiccup shouldn't tear down a good session).
-            if (!wasLoggedInRef.current) {
-              if (loginTimeoutRef.current) {
-                clearTimeout(loginTimeoutRef.current);
-                loginTimeoutRef.current = null;
-              }
-              await failLogin();
-            }
-            return;
-          }
-
-          // Credentials valid → keep the watchdog patient while the web login lands.
-          nativeAuthOkRef.current = true;
-          if (loginInProgressRef.current) {
-            setLoadingStatus('Signed in — loading your workspace…');
-          }
-          const authToken: string = data?.data?.auth_token ?? data?.auth_token ?? '';
-          const isDriver: boolean = !!(
-            data?.data?.isDriver ??
-            data?.isDriver ??
-            (data?.data?.user_type?.toLowerCase() === 'driver')
-          );
-          if (!authToken) {
-            // Success response but no token where we look — log the shape so the
-            // extraction can be fixed (an empty auth_token silently breaks the
-            // FCM device-token sync and call notifications later). Joined
-            // strings, because Metro collapses arrays to "Array(n)".
-            const dataObj = data?.data ?? {};
-            logLogin('⚠ sign_in success but auth_token EMPTY — response shape', {
-              topLevelKeys: Object.keys(data ?? {}).join(', '),
-              dataKeys: Object.keys(dataObj).join(', '),
-              tokenishKeys:
-                Object.keys(dataObj).filter((k) => /token|auth/i.test(k)).join(', ') || '(none)',
-              nestedUserKeys: Object.keys(dataObj?.user ?? {}).join(', ') || '(none)',
-            });
-          }
-          logLogin('✓ native sign_in OK (creds valid) → storing session', {
-            authToken: authToken ? `${authToken.slice(0, 8)}…` : 'EMPTY',
-            isDriver,
-          });
-          // rememberSession saves auth_token, device_token=native FCM token, user_role
-          await rememberSession(authToken, isDriver, fcmToken);
-        } catch (e: any) {
-          logLogin(`✗ native sign_in ERROR after ${Date.now() - apiStart}ms`, e?.message ?? e);
-          // Network-level failure (no response at all). Mirror the !res.ok
-          // fast-fail: without it, nativeAuthOkRef stays false and the loader
-          // sits frozen until the first 55s watchdog check.
-          if (!wasLoggedInRef.current && loginInProgressRef.current) {
-            if (loginTimeoutRef.current) {
-              clearTimeout(loginTimeoutRef.current);
-              loginTimeoutRef.current = null;
-            }
-            await failLogin(
-              'Could not reach the server. Please check your internet connection and try again.'
-            );
-          }
-        }
-      })();
-    }
-  };
-
-  const handleLoadEnd = (e: any) => {
-    const url = e.nativeEvent.url.toLowerCase();
+  const handleLoadEnd = (_e: any) => {
     webErroredRef.current = false; // a successful load clears any prior error
-    logLogin('onLoadEnd', { url });
-    if (url.includes("/login")) {
-      loginPageReadyRef.current = true;
-
-      if (loginInProgressRef.current) {
-        logLogin('onLoadEnd(/login) + login active → (re)injecting auto-fill');
-        webRef.current?.injectJavaScript(buildAutoFillScript(mobileNo, password, userType));
-      } else {
-        prewarmLoadCountRef.current += 1;
-        const elapsed = prewarmStartRef.current ? Date.now() - prewarmStartRef.current : 0;
-        console.log(
-          `[PREWARM] full /login load #${prewarmLoadCountRef.current} done at +${elapsed}ms (${(elapsed / 1000).toFixed(1)}s) — each load is a full Angular boot`,
-        );
-      }
-    }
+    hideSplashOnce();              // first paint → drop the native splash
   };
 
-  const hidePostLoginLoader = () => {
-    logLogin('hidePostLoginLoader → probe injected + 1500ms fallback armed');
-    webRef.current?.injectJavaScript(webReadyProbeScript);
-    if (postLoginFallbackRef.current) clearTimeout(postLoginFallbackRef.current);
-    postLoginFallbackRef.current = setTimeout(() => setLoading(false), 1500);
-  };
-
-  const handleNavigationStateChange = async (navState: any) => {
-    const url = navState.url.toLowerCase();
-    lastWebUrlRef.current = url;
+  const handleNavigationStateChange = (navState: any) => {
+    const url = (navState.url || '').toLowerCase();
     canGoBackRef.current = !!navState.canGoBack;
 
-    // Never let a storage hiccup skip the success/logout handling below.
-    try {
-      await AsyncStorage.setItem(STORAGE_KEYS.SAVE_WEB_URL, navState.url);
-    } catch { }
-
-    const onLoginPage = url.includes("/login");
-    // SOLUTION 2: success = left /login (isLoginSuccessUrl). isKnownPostLoginUrl
-    // just tags whether we landed on a recognised endpoint (/select-*, /patient,
-    // …) for clearer logs — the success decision itself is the general rule.
-    const successUrl = isLoginSuccessUrl(url);
-    logLogin('onNavigationStateChange', {
-      url,
-      onLoginPage,
-      successUrl,
-      knownPostLogin: isKnownPostLoginUrl(url),
-      loginInProgress: loginInProgressRef.current,
-      wasLoggedIn: wasLoggedInRef.current,
-    });
-
-    // Login SUCCESS: an in-progress login navigated away from /login. NOT tied
-    // to /select-organization only — single-organization users (who land straight
-    // on /calendar or a dashboard) previously got stuck behind the loader forever,
-    // so any non-/login URL counts (see isLoginSuccessUrl).
-    if (loginInProgressRef.current && successUrl) {
-      const t1 = Date.now() - loginStartRef.current;
-      logLogin('✓✓ LOGIN SUCCESS — left /login, hiding loader', {
-        landedOn: url,
-        knownEndpoint: isKnownPostLoginUrl(url),
-      });
-      console.log(`⏲ TOTAL login → web-login done: ${t1}ms (${(t1 / 1000).toFixed(1)}s)`);
-      // Disarm the watchdog and hide the loader FIRST. Persisting state used to
-      // come before these — if that await threw, the loader stayed up forever
-      // (the watchdog had already been told login was no longer in progress).
-      if (loginTimeoutRef.current) {
-        clearTimeout(loginTimeoutRef.current);
-        loginTimeoutRef.current = null;
-      }
-      // SPA route changes (pushState) fire here, not onLoadEnd — the single
-      // reliable place to hide the loader after login.
-      hidePostLoginLoader();
-      loginInProgressRef.current = false;
-      autofillRetryRef.current = 0;
-      wasLoggedInRef.current = true;
-      try {
-        await AsyncStorage.setItem(STORAGE_KEYS.IS_LOGGED_IN, "true");
-      } catch (e: any) {
-        logLogin('⚠ failed to persist IS_LOGGED_IN (cold-start restore may miss)', e?.message ?? e);
-      }
-
-      // Invitee (staff) never called the native sign_in, so the native FCM
-      // token was never registered with the backend. Read the web session's
-      // auth token from localStorage and post it back (WEB_AUTH_TOKENS) so
-      // native can sync the FCM token via refresh_token.
-      if (loginTypeRef.current === 'Invitee') {
-        setTimeout(() => {
-          webRef.current?.injectJavaScript(`
-            (function() {
-              try {
-                var cu = localStorage.getItem('currentUser');
-                var parsed = cu ? JSON.parse(cu) : {};
-                window.ReactNativeWebView.postMessage(JSON.stringify({
-                  type: 'WEB_AUTH_TOKENS',
-                  auth_token: parsed.auth_token || parsed.authToken || localStorage.getItem('auth_token') || '',
-                  device_token: parsed.device_token || parsed.deviceToken || localStorage.getItem('device_token') || '',
-                }));
-              } catch(e) {}
-            })(); true;
-          `);
-        }, 800);
+    if (isOnLoginPage(url)) {
+      // On the web login page. If we were previously authenticated this session,
+      // it's a logout / session-expiry: stop tracking (its /tracking/end must run
+      // BEFORE we clear the token) and drop the stored auth so a logged-out
+      // device neither tracks nor receives ambulance push.
+      if (authSyncedRef.current) {
+        authSyncedRef.current = false;
+        (async () => {
+          try { await hrmsTracker.stop(); } catch { }
+          await AsyncStorage.multiRemove([
+            TRACKING_STORAGE.AUTH_TOKEN,
+            TRACKING_STORAGE.DEVICE_TOKEN,
+            'user_role',
+          ]).catch(() => { });
+        })();
       }
       return;
     }
 
-    // LOGOUT / session-expiry: web returned to /login after being logged in.
-    if (wasLoggedInRef.current && onLoginPage) {
-      logLogin('⎋ LOGOUT / session-expiry — returned to /login, resetting');
-      loginInProgressRef.current = false;
-      resetAutoFillPageFlags();
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.IS_LOGGED_IN,
-        STORAGE_KEYS.SAVE_WEB_URL,
-        TRACKING_STORAGE.AUTH_TOKEN,
-        TRACKING_STORAGE.DEVICE_TOKEN,
-        'user_role',
-      ]);
-      wasLoggedInRef.current = false;
-      setShowWeb(false);
-      // Keep the WebView mounted (it is already sitting on /login) so the next
-      // Login press has a live webRef — otherwise the immediate auto-fill
-      // injection is silently dropped and login waits for a full page load.
-      setPreWarmMode(true);
-      setLoading(false);
-      setMobileNo('');
-      setPassword('');
+    // Authenticated page. Pull the web session's auth token into native storage
+    // once per session — covers both a fresh web login and a stay-signed-in
+    // relaunch that lands straight on an app page. Rotation is handled by the
+    // foreground re-sync in the AppState effect.
+    if (!authSyncedRef.current) {
+      syncWebAuthTokens();
     }
   };
 
@@ -2289,446 +1695,7 @@ function AppContent() {
     true;
   `;
 
-  // EARLY LOADER HANDOFF (single-org doctors). After submit, native auth confirms
-  // the login succeeded in ~4s, but a single-org doctor's web flow keeps the URL
-  // on /login for ~40s while it bootstraps the entire /patients app — so the URL
-  // never changes and our loader would sit up the whole time. This probe watches
-  // the DOM and, the instant real app content paints (toolbar/sidenav/table) with
-  // the login form GONE, tells native to hide the loader — handing the user over
-  // to the web app's own loading UI ~35s earlier. It NEVER reveals the login form
-  // (guarded on #mobile_no) or a blank screen (requires positive content), and it
-  // has NO timeout-reveal (silently gives up so the URL-nav path still finalizes).
-  const loginHandoffProbeScript = `
-  (function loginHandoff() {
-    var POLL_INTERVAL = 500;
-    var MAX_WAIT = 120000;
-    var startTime = Date.now();
-    var lastDebug = -99999;
-
-    function formPresent() {
-      return !!(document.getElementById('mobile_no') ||
-        document.getElementById('mat-button-toggle-1-button') ||
-        document.getElementById('mat-button-toggle-2-button'));
-    }
-    function contentPresent() {
-      return !!(
-        document.querySelector('mat-toolbar') ||
-        document.querySelector('mat-sidenav-container') ||
-        document.querySelector('mat-sidenav') ||
-        document.querySelector('[class*="sidebar"]') ||
-        document.querySelector('table') ||
-        document.querySelector('mat-card') ||
-        document.querySelector('mat-list-item') ||
-        document.querySelector('mat-selection-list'));
-    }
-    function spinnerPresent() {
-      return !!(
-        document.querySelector('mat-spinner') ||
-        document.querySelector('mat-progress-spinner') ||
-        document.querySelector('mat-progress-bar') ||
-        document.querySelector('[class*="spinner"]') ||
-        document.querySelector('[class*="loading"]') ||
-        document.querySelector('[class*="loader"]'));
-    }
-    function tokenPresent() {
-      try {
-        var cu = localStorage.getItem('currentUser');
-        if (cu) { var p = JSON.parse(cu); if (p && (p.auth_token || p.authToken)) return true; }
-        if (localStorage.getItem('auth_token')) return true;
-      } catch (e) {}
-      return false;
-    }
-    function post(obj) {
-      try { window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}
-    }
-    // What has the page fetched so far? Surfaces whether the long post-login
-    // wait is chunk downloads (count/kb climbing) or idle JS boot (flat).
-    function resourceStats() {
-      try {
-        var rs = performance.getEntriesByType('resource');
-        var bytes = 0;
-        for (var i = 0; i < rs.length; i++) bytes += (rs[i].transferSize || 0);
-        return { count: rs.length, kb: Math.round(bytes / 1024) };
-      } catch (e) { return null; }
-    }
-
-    function tick() {
-      var fp = formPresent();
-      var cp = contentPresent();
-      // SAFE handoff: real app content painted AND the login form is gone.
-      if (document.readyState === 'complete' && cp && !fp) {
-        post({ type: 'LOGIN_HANDOFF', waited: Date.now() - startTime });
-        return;
-      }
-      // Diagnostic pulse every ~4s so native can see what the web is showing
-      // during the long single-org wait (is it authed early? spinner over form?).
-      var now = Date.now();
-      if (now - lastDebug > 4000) {
-        lastDebug = now;
-        post({
-          type: 'HANDOFF_DEBUG',
-          t: now - startTime,
-          form: fp,
-          content: cp,
-          spinner: spinnerPresent(),
-          token: tokenPresent(),
-          rs: document.readyState,
-          res: resourceStats(),
-        });
-      }
-      if (now - startTime > MAX_WAIT) return; // give up silently
-      setTimeout(tick, POLL_INTERVAL);
-    }
-    tick();
-  })();
-  true;
-  `;
-
-  // Polls the org-selection page until it has rendered real, interactive
-  // content (not just a spinner), then signals native via WEB_READY so the
-  // loader can be hidden the moment content paints — without a blank flash.
-  // A fixed fallback in the load handlers covers the case this never fires.
-  const webReadyProbeScript = `
-  (function webReady() {
-    var POLL_INTERVAL = 150;
-    var MAX_WAIT = 5000;
-    var startTime = Date.now();
-
-    function hasContent() {
-      if (document.readyState !== 'complete') return false;
-
-      // Login page is still mounted (mid-transition) — NOT ready. The login
-      // submit button shares the 'button.submit-button' selector, so without
-      // this guard the probe fires WEB_READY against the login DOM and the
-      // loader lifts to reveal the login page (single-org doctors skip the
-      // org page and hit this transition directly).
-      var onLoginPage =
-        document.getElementById('mobile_no') ||
-        document.getElementById('mat-button-toggle-1-button') ||
-        document.getElementById('mat-button-toggle-2-button');
-      if (onLoginPage) return false;
-
-      var el =
-        // Org-selection page
-        document.querySelector('mat-card') ||
-        document.querySelector('[class*="organization"]') ||
-        document.querySelector('mat-list-item') ||
-        document.querySelector('mat-selection-list') ||
-        // Main app shell (single-org doctors land straight on /patients)
-        document.querySelector('mat-toolbar') ||
-        document.querySelector('mat-sidenav-container') ||
-        document.querySelector('mat-sidenav') ||
-        document.querySelector('[class*="sidebar"]') ||
-        document.querySelector('table');
-      return !!el;
-    }
-
-    function tick() {
-      var ready = hasContent();
-      var timedOut = Date.now() - startTime > MAX_WAIT;
-      if (ready || timedOut) {
-        try {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'WEB_READY',
-            waited: Date.now() - startTime,
-            reason: ready ? 'content' : 'timeout',
-          }));
-        } catch (e) {}
-        return;
-      }
-      setTimeout(tick, POLL_INTERVAL);
-    }
-    tick();
-  })();
-  true;
-  `;
-
-  // Builds the auto-fill injection script with actual credential values baked in.
-  // Called at login time (not at render time) so values are always fresh.
-  const buildAutoFillScript = (mobile: string, pass: string, uType: string): string => {
-    const safeMobile = JSON.stringify(mobile);
-    const safePassword = JSON.stringify(pass);
-    const safeUserType = JSON.stringify(uType);
-    return `
-  (function autoLogin() {
-    var mobileNo = ${safeMobile};
-    var password = ${safePassword};
-    var verificationType = ${safeUserType};
-
-    // Nothing to fill — bail (defensive; always called with credentials).
-    if (!mobileNo || !password) return;
-
-    var POLL_INTERVAL = 250;     // re-check form readiness ~4x/sec
-    // Poll for the form up to this ceiling, then post AUTOFILL_FORM_NOT_FOUND so
-    // native can reload the page once and retry (and finally fail) instead of
-    // sitting behind the loader. Slow-but-alive loads are covered by the retry:
-    // one reload restarts this window, so ~2×60s still outlasts the worst
-    // measured /login load (~108s).
-    var MAX_WAIT = 60000;
-
-    var startTime = Date.now();
-    var submitted = false;
-    var typeSelected = false;
-    var filled = false;
-
-    // Bridge auto-fill progress + timing back to native so it shows in Metro
-    // logs alongside the [LOGIN] markers (the webview console isn't visible there).
-    function report(msg, extra) {
-      var payload = { type: 'AUTOFILL_LOG', t: Date.now() - startTime, msg: msg };
-      if (extra) payload.extra = extra;
-      try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); } catch (e) {}
-    }
-
-    report('script injected, polling for form');
-
-    // Guard against DOUBLE SUBMIT. handleLogin injects once (warm page) and
-    // handleLoadEnd re-injects on the next /login load event — but if the page
-    // did NOT actually reload, that second injection would re-fill and re-click
-    // the SAME live form, submitting the login twice. A double submit makes the
-    // web SPA restart/stall its login (single-org doctors bootstrap the whole
-    // /patients app inline, so this cost 85s in the field). A GENUINE post-submit
-    // reload clears window.__hrAutoLoginSubmitted, so the intended re-fill path
-    // still works; only same-page re-injection is blocked here.
-    if (window.__hrAutoLoginSubmitted) {
-      report('duplicate injection on same page — already submitted, skipping');
-      return;
-    }
-
-    // Guard against CONCURRENT POLLERS. The script can be injected from several
-    // points (Login press, PREWARM_FORM_READY, onLoadEnd) against the same live
-    // page; without this, two tick() loops each hold their own local submitted/
-    // filled flags and can both fill + click. A real page (re)load clears the
-    // flag, so the reload-retry path still gets a fresh poller.
-    if (window.__hrAutoFillPolling) {
-      report('poller already active on this page — skipping duplicate injection');
-      return;
-    }
-    window.__hrAutoFillPolling = true;
-
-    function selectUserType() {
-      var doctorButton = document.getElementById('mat-button-toggle-1-button');
-      var staffButton = document.getElementById('mat-button-toggle-2-button');
-      if (verificationType.toLowerCase() === 'invitee') {
-        if (staffButton) staffButton.click();
-      } else {
-        if (doctorButton) doctorButton.click();
-      }
-    }
-
-    // Set a value the way Angular reliably notices it. Assigning .value directly
-    // can bypass the framework's value tracker, leaving the reactive form model
-    // empty even though the field shows text — so the submit stays disabled or
-    // posts blank credentials (login "works in web" when typed by hand, fails
-    // when auto-filled). The native prototype setter + input/change/blur events
-    // make Angular pick up the value and run its validators.
-    function setNativeValue(el, val) {
-      try {
-        var proto = el.tagName === 'TEXTAREA'
-          ? window.HTMLTextAreaElement.prototype
-          : window.HTMLInputElement.prototype;
-        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (desc && desc.set) { desc.set.call(el, val); } else { el.value = val; }
-      } catch (e) { el.value = val; }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('blur', { bubbles: true }));
-    }
-
-    // Best-effort probe for the web app's visible login-error UI (wrong password
-    // etc.) so native can fail fast instead of waiting out its watchdog — the
-    // only fast-fail path for Invitee/staff, who never hit the native sign_in.
-    //
-    // Two tiers, because the web app also snackbars on SUCCESS ("You are logged
-    // in successfully.") while the login form is still in the DOM — matching any
-    // snackbar tore down a succeeding login in the field:
-    //  • field errors (mat-error) — always errors, success never renders them;
-    //  • snackbars/toasts — only errors when their TEXT says so; success-y or
-    //    unclassifiable text returns null (false negatives are cheap — the
-    //    native watchdog backstops; false positives kill a good login).
-    var SUCCESS_RE = /success|logged in|welcome/i;
-    var ERROR_RE = /invalid|incorrect|wrong|fail|error|unauthori|expired|blocked|denied|not (found|match|exist|valid)|already/i;
-
-    // textContent minus material icon ligatures ("done", "clear", …) which
-    // otherwise pollute the message shown to the user.
-    function visibleText(el) {
-      try {
-        var clone = el.cloneNode(true);
-        var icons = clone.querySelectorAll('mat-icon, .mat-icon, .material-icons');
-        for (var i = 0; i < icons.length; i++) {
-          icons[i].parentNode && icons[i].parentNode.removeChild(icons[i]);
-        }
-        return (clone.textContent || '').replace(/\\s+/g, ' ').trim();
-      } catch (e) {
-        return (el.textContent || '').replace(/\\s+/g, ' ').trim();
-      }
-    }
-
-    function findLoginError() {
-      var fieldError = document.querySelector('mat-error, .mat-error, .mat-mdc-form-field-error');
-      if (fieldError) return visibleText(fieldError) || 'Login failed';
-
-      var snack = document.querySelector(
-        'simple-snack-bar, .mat-snack-bar-container, .mat-mdc-snack-bar-container, .toast-error'
-      );
-      if (!snack) return null;
-      var text = visibleText(snack);
-      if (!text || SUCCESS_RE.test(text)) return null; // success/neutral → not an error
-      // Error-styled containers (panelClass with error/danger/warn) count even
-      // when the text isn't English; plain snackbars need error-y text.
-      var styledAsError = /error|danger|warn/i.test(snack.className || '');
-      if (styledAsError || ERROR_RE.test(text)) return text;
-      return null; // unclassifiable → let the watchdog decide
-    }
-
-    var errorReported = false;
-    function reportLoginError(text) {
-      if (errorReported) return;
-      errorReported = true;
-      report('✗ web login error UI detected: ' + text);
-      try {
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'WEB_LOGIN_ERROR', text: text,
-        }));
-      } catch (e) {}
-    }
-
-    var errorStreak = 0; // consecutive ticks the error UI was visible pre-submit
-
-    function tick() {
-      if (submitted || window.__hrAutoLoginSubmitted) return;
-      if (Date.now() - startTime > MAX_WAIT) {
-        // Release the poller slot so a retry injection on this same live page
-        // (no reload) can start a fresh poller instead of bailing at the guard.
-        window.__hrAutoFillPolling = false;
-        report('🛑 GAVE UP — form not ready before MAX_WAIT (' + MAX_WAIT + 'ms)');
-        try {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'AUTOFILL_FORM_NOT_FOUND', waited: Date.now() - startTime,
-          }));
-        } catch (e) {}
-        return;
-      }
-      if (!window.location.href.includes('/login')) {
-        window.__hrAutoFillPolling = false;
-        report('not on /login anymore, stopping', { href: window.location.href });
-        return;
-      }
-
-      var mobileInput = document.getElementById('mobile_no');
-      // Prefer the semantic password selector — the auto-generated #mat-input-N
-      // id shifts with render order and can point at the wrong field.
-      var passwordInput =
-        document.querySelector('input[type="password"]') ||
-        document.querySelector('#mat-input-1');
-      var loginButton = document.querySelector('button.submit-button');
-
-      // Form not rendered yet — keep polling instead of giving up.
-      if (!mobileInput || !passwordInput || !loginButton) {
-        report('form not ready, re-poll', {
-          mobile: !!mobileInput, password: !!passwordInput, button: !!loginButton,
-        });
-        setTimeout(tick, POLL_INTERVAL);
-        return;
-      }
-
-      // Select the doctor/staff toggle once, before filling.
-      if (!typeSelected) {
-        selectUserType();
-        typeSelected = true;
-        report('user-type toggle selected: ' + verificationType);
-      }
-
-      // Fill the fields EXACTLY ONCE. Re-dispatching input/change/blur on every
-      // poll restarts the web form's async (backend) validator each tick, so the
-      // submit button never settles to enabled — a self-inflicted stall on slow
-      // networks. After the one-time fill we only READ button.disabled; we never
-      // re-fire events. Angular already has the value + validity from the first fill.
-      if (!filled) {
-        setNativeValue(mobileInput, mobileNo);
-        setNativeValue(passwordInput, password);
-        filled = true;
-        report('fields filled (once)', { buttonDisabled: loginButton.disabled });
-      }
-
-      // Button may still be disabled until Angular finishes validating — re-tick,
-      // but do NOT re-fill (see above). If a validation error stays visible for
-      // several consecutive ticks (not a transient async-validator flicker), the
-      // form will never become submittable — tell native instead of stalling.
-      if (loginButton.disabled) {
-        var preSubmitError = findLoginError();
-        errorStreak = preSubmitError ? errorStreak + 1 : 0;
-        if (errorStreak >= 4) { // ~1s of a persistent visible error
-          window.__hrAutoFillPolling = false;
-          reportLoginError(preSubmitError);
-          return;
-        }
-        report('submit still DISABLED — waiting for validation, re-poll (no refill)');
-        setTimeout(tick, POLL_INTERVAL);
-        return;
-      }
-
-      // Submit EXACTLY ONCE — do NOT re-click. The browser logs in with a single
-      // submit; the web login briefly reloads /login while authenticating, and
-      // re-clicking there restarts the whole multi-second server round trip (and
-      // fires duplicate logins), which made app logins far slower than the web.
-      // Genuine failures (wrong password) are caught by the native login timeout.
-      if (window.__hrAutoLoginSubmitted) return; // another poller won the race
-      loginButton.click();
-      submitted = true;
-      window.__hrAutoLoginSubmitted = true; // block re-submit on same page instance
-      var clickedAt = Date.now();
-      report('✓ SUBMIT CLICKED — waiting for web login (single submit)');
-
-      // Watch (no re-click) until the page leaves /login. If the web app shows
-      // an error instead (wrong password — the server rejected the submit),
-      // report it so native can drop the loader right away. Only trust error UI
-      // while the login form is still on screen: a success snackbar during the
-      // post-login bootstrap (form already destroyed) is NOT a credential error.
-      function watchSubmit() {
-        if (!window.location.href.includes('/login')) {
-          report('navigation started after submit (' + (Date.now() - clickedAt) + 'ms) — login accepted');
-          return;
-        }
-        var formStillThere = document.getElementById('mobile_no');
-        var postSubmitError = formStillThere ? findLoginError() : null;
-        if (postSubmitError) {
-          reportLoginError(postSubmitError);
-          return;
-        }
-        if (Date.now() - clickedAt > 90000) return;
-        setTimeout(watchSubmit, 2000);
-      }
-      setTimeout(watchSubmit, 2000);
-    }
-
-    tick();
-  })();
-  true;
-  `;
-  };
-
   /* ================= WEB VIEW ================= */
-
-  if (showMaintenance) {
-    return (
-      <SafeAreaView
-        style={{
-          flex: 1,
-          justifyContent: 'center',
-          alignItems: 'center',
-          backgroundColor: '#fff',
-          padding: 20,
-        }}
-      >
-        <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 10 }}>
-          Under Maintenance
-        </Text>
-        <Text style={{ textAlign: 'center', fontSize: 14 }}>
-          {maintenanceMessage || 'Please try again later.'}
-        </Text>
-      </SafeAreaView>
-    );
-  }
 
   // Show the system location permission popup.
   // Falls back to App Settings only when permanently denied (OS blocks the dialog).
@@ -2772,158 +1739,6 @@ function AppContent() {
   const handleMessage = async (event: any) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
-
-      // ─── PREWARM_FORM_READY ───────────────────────────────────────────────
-      // The login form exists in the DOM — the page is USABLE now, well before
-      // onLoadEnd fires (which waits for the whole page, ~44s on /login). Mark it
-      // ready so an early Login tap injects the auto-fill immediately instead of
-      // waiting for the full page-load event.
-      if (message?.type === 'PREWARM_FORM_READY') {
-        if (!loginPageReadyRef.current) {
-          loginPageReadyRef.current = true;
-          const el = prewarmStartRef.current ? Date.now() - prewarmStartRef.current : 0;
-          console.log(
-            `[PREWARM] ✓ login FORM ready at +${el}ms (${(el / 1000).toFixed(1)}s) — usable now (onLoadEnd comes much later)`,
-          );
-        }
-        // A login is waiting on this form: either the WebView mounted AFTER the
-        // Login press (webRef was null, the immediate injection was dropped) or
-        // an AUTOFILL_FORM_NOT_FOUND reload-retry just brought the form back.
-        // Inject now that the form exists — far earlier than onLoadEnd. The
-        // script's __hrAutoFillPolling guard makes overlapping injections no-ops.
-        if (loginInProgressRef.current) {
-          logLogin('PREWARM_FORM_READY + login active → injecting auto-fill');
-          webRef.current?.injectJavaScript(buildAutoFillScript(mobileNo, password, userType));
-        }
-        return;
-      }
-
-      // ─── AUTOFILL_FORM_NOT_FOUND (login form never rendered in the wait window) ─
-      // Reload the page once and let the fresh load retry; if the form is still
-      // missing after the retry, fail honestly instead of leaving the loader up
-      // until the 3-minute watchdog ceiling + false "Login Failed".
-      if (message?.type === 'AUTOFILL_FORM_NOT_FOUND') {
-        if (!loginInProgressRef.current) return;
-        if (autofillRetryRef.current === 0) {
-          autofillRetryRef.current = 1;
-          logLogin(`⟳ form not found after ${message.waited}ms — reloading /login for one retry`);
-          webRef.current?.reload();
-          // Fresh attempt → fresh watchdog window. PREWARM_FORM_READY / onLoadEnd
-          // re-inject the auto-fill when the reloaded form appears.
-          scheduleWatchdog(FIRST_CHECK_MS);
-        } else {
-          logLogin('✗ form STILL not found after reload — failing login');
-          if (loginTimeoutRef.current) {
-            clearTimeout(loginTimeoutRef.current);
-            loginTimeoutRef.current = null;
-          }
-          await failLogin(
-            nativeAuthOkRef.current
-              ? 'Your credentials are correct, but the app page failed to load. Please try again.'
-              : undefined,
-          );
-        }
-        return;
-      }
-
-      // ─── WEB_LOGIN_ERROR (web app showed a login error — e.g. wrong password) ─
-      // Fast-fail path for Invitee/staging ONLY — those logins are never
-      // validated by the native sign_in, so the web UI is the only error signal.
-      // For Doctor/Staff the native sign_in is the credential authority (wrong
-      // password already fast-fails via !res.ok), and acting on web-side UI
-      // sniffing there once tore down a SUCCEEDING login (success snackbar
-      // misread as an error) — so for them this is log-only.
-      if (message?.type === 'WEB_LOGIN_ERROR') {
-        const webGatedLogin = loginTypeRef.current === 'Invitee' || IS_STAGING;
-        if (loginInProgressRef.current && webGatedLogin) {
-          logLogin('✗ web login error UI detected', { text: message.text });
-          if (loginTimeoutRef.current) {
-            clearTimeout(loginTimeoutRef.current);
-            loginTimeoutRef.current = null;
-          }
-          await failLogin(
-            typeof message.text === 'string' && message.text.trim()
-              ? message.text.trim()
-              : 'Login failed. Please check your credentials.',
-          );
-        } else {
-          logLogin('web login error UI reported (log-only — native sign_in is authoritative)', {
-            text: message.text,
-          });
-        }
-        return;
-      }
-
-      // ─── AUTOFILL_LOG (auto-fill progress bridged from the WebView) ──────
-      if (message?.type === 'AUTOFILL_LOG') {
-        logLogin(`[autofill +${message.t}ms] ${message.msg}`, message.extra ?? undefined);
-        // Submit just fired → start watching for the web app's real content so we
-        // can hand off the loader early (esp. single-org doctors, who sit on
-        // /login for ~40s while /patients bootstraps). Safe no-op on multi-org.
-        if (typeof message.msg === 'string' && message.msg.indexOf('SUBMIT CLICKED') !== -1) {
-          if (loginInProgressRef.current) setLoadingStatus('Verifying your credentials…');
-          webRef.current?.injectJavaScript(loginHandoffProbeScript);
-        }
-        return;
-      }
-
-      // ─── HANDOFF_DEBUG (diagnostic: what the web shows during the long wait) ─
-      if (message?.type === 'HANDOFF_DEBUG') {
-        logLogin(`🔎 web state @+${message.t}ms`, {
-          form: message.form,       // login form still in DOM?
-          content: message.content, // real app content painted?
-          spinner: message.spinner, // web showing its own loader?
-          token: message.token,     // auth session stored in localStorage?
-          readyState: message.rs,
-          resources: message.res,   // { count, kb } fetched by the page so far — shows WHAT the long bootstrap is doing
-        });
-        // Keep the loader text honest during the long single-org bootstrap
-        // (web session confirmed at ~6s, then ~36s of Angular chunk loading
-        // with the URL parked on /login — measured in the field).
-        if (loginInProgressRef.current && message.token) {
-          setLoadingStatus(
-            message.t > 20000
-              ? 'Still loading your workspace — this can take a moment on slow connections…'
-              : 'Signed in — loading your workspace…',
-          );
-        }
-        return;
-      }
-
-      // ─── LOGIN_HANDOFF ────────────────────────────────────────────────────
-      // The web app has painted real content (login form gone) while the URL may
-      // still be /login. Credentials are already confirmed valid natively, so hide
-      // the loader now and let the user watch the web app's own loading UI instead
-      // of our frozen loader. The URL-nav success path still finalizes login state.
-      if (message?.type === 'LOGIN_HANDOFF') {
-        if (loginInProgressRef.current && nativeAuthOkRef.current) {
-          const t = loginStartRef.current ? Date.now() - loginStartRef.current : 0;
-          logLogin('⏩ EARLY HANDOFF — web content painted, hiding loader before URL nav', {
-            waited: message.waited,
-            atMs: t,
-          });
-          console.log(`⏩ EARLY HANDOFF (loader hidden): ${t}ms (${(t / 1000).toFixed(1)}s)`);
-          setLoading(false);
-        }
-        return;
-      }
-
-      // ─── WEB_READY ───────────────────────────────────────────────────────
-      // Post-login page has rendered real content — hide the loader now (the
-      // 1500ms fallback in hidePostLoginLoader covers the case this never fires).
-      if (message?.type === 'WEB_READY') {
-        logLogin('✓✓✓ WEB_READY — loader hidden, login flow COMPLETE', {
-          waited: message.waited,
-          reason: message.reason,
-        });
-        if (loginStartRef.current) {
-          const total = Date.now() - loginStartRef.current;
-          console.log(`⏲⏲ TOTAL login → WEBVIEW READY (usable): ${total}ms (${(total / 1000).toFixed(1)}s)`);
-        }
-        loginInProgressRef.current = false;
-        setLoading(false);
-        return;
-      }
 
       // ─── PDF (existing) ──────────────────────────────────────────────────
       if (message?.type === 'pdf') {
@@ -2980,38 +1795,54 @@ function AppContent() {
       }
 
       if (message?.type === 'WEB_AUTH_TOKENS') {
-        console.log('[WEB_AUTH_TOKENS] ── message received ──');
-
         const authToken: string = message?.auth_token ?? '';
         const webDeviceToken: string = message?.device_token ?? '';
-        const nativeFcmToken = fcmTokenRef.current || await getFCMToken();
-
-        console.log('[WEB_AUTH_TOKENS] auth_token :', authToken ? `${authToken.slice(0, 10)}...` : 'EMPTY');
-        console.log('[WEB_AUTH_TOKENS] web_device_token:', webDeviceToken ? `${webDeviceToken}` : 'EMPTY');
-        console.log('[WEB_AUTH_TOKENS] native_fcm_token:', nativeFcmToken ? `${nativeFcmToken}` : 'EMPTY');
+        const isDriver: boolean = !!message?.is_driver;
 
         if (!authToken) {
-          console.log('[WEB_AUTH_TOKENS] ⚠ auth_token empty — web localStorage key may differ, token not synced');
-          return;
-        }
-        if (!nativeFcmToken) {
-          console.log('[WEB_AUTH_TOKENS] ⚠ native FCM token empty — Firebase not initialised yet, token not synced');
+          // Web session not ready yet (localStorage.currentUser has no token).
+          // Leave authSyncedRef false so a later nav / foreground retries.
+          console.log('[WEB_AUTH_TOKENS] ⚠ auth_token empty — web session not ready, will retry');
           return;
         }
 
-        // Invitee is staff, not driver — user_role = 'staff'
-        // Store web device_token so syncDeviceToken can send it as X-Device-Token
-        await rememberSession(authToken, false, webDeviceToken);
-        // Replace the web token in the auth_tokens row with the native FCM token
-        await syncDeviceToken(nativeFcmToken);
-        console.log('[WEB_AUTH_TOKENS] ✅ native FCM token synced to backend via refresh_token');
+        // We have a token → the session is synced for this app run, so the
+        // nav-based injector stops re-firing. Rotation is caught by the
+        // foreground re-sync in the AppState effect (re-reads localStorage).
+        authSyncedRef.current = true;
+
+        // Idempotent: if the token is unchanged from what we already stored, do
+        // nothing. Without this guard, re-syncing on every nav/foreground would
+        // thrash device_token (rememberSession → web token, syncDeviceToken →
+        // FCM) and fire a redundant refresh_token call each time.
+        const storedAuth = await AsyncStorage.getItem(TRACKING_STORAGE.AUTH_TOKEN);
+        if (storedAuth === authToken) return;
+
+        const nativeFcmToken = fcmTokenRef.current || await getFCMToken();
+        console.log('[WEB_AUTH_TOKENS] new/changed token → storing session', {
+          authToken: `${authToken.slice(0, 10)}...`,
+          isDriver,
+          fcm: nativeFcmToken ? 'present' : 'EMPTY',
+        });
+
+        // Store the web session (auth_token + web device_token + user_role). This
+        // runs even when the FCM token isn't ready yet, because HRMS tracking +
+        // the ambulance-push gate need auth_token regardless of FCM.
+        await rememberSession(authToken, isDriver, webDeviceToken);
+        // Swap the stored device_token to the native FCM token so backend push
+        // targets this device. syncDeviceToken no-ops if the token is unchanged.
+        if (nativeFcmToken) {
+          await syncDeviceToken(nativeFcmToken);
+          console.log('[WEB_AUTH_TOKENS] ✅ native FCM token synced to backend via refresh_token');
+        } else {
+          console.log('[WEB_AUTH_TOKENS] ⚠ native FCM token not ready — will sync on next foreground');
+        }
         return;
       }
 
       // ─── CURRENT_USER_DATA ───────────────────────────────────────────────
       if (message?.type === 'CURRENT_USER_DATA') {
         const user = message?.data ?? null;
-        setCurrentUser(user);
         await AsyncStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
         return;
       }
@@ -3199,252 +2030,78 @@ function AppContent() {
   true;
   `;
 
-  // Runs at the EARLIEST point of every page load (before content). Besides the
-  // isNativeApp flag, it polls for the login FORM (#mobile_no) and signals native
-  // the instant the form exists — WITHOUT waiting for onLoadEnd. onLoadEnd only
-  // fires when the WHOLE page (every image/font/trailing request) finishes, which
-  // on /login was measured at ~44s even though the form is interactive in a few
-  // seconds. Keying "page ready" off the form (not onLoadEnd) means a user who
-  // taps Login early gets the auto-fill injected immediately instead of waiting
-  // for the full page-load event. Harmless on non-login pages (never finds the
-  // form, self-stops at MAX_WAIT).
+  // Runs at the EARLIEST point of every page load (before content). Sets the
+  // isNativeApp flag the web app keys off to enable the native bridges (native
+  // geolocation, PDF postMessage, HRMS tracking controls).
   const beforeContentLoadedScript = `
     window.isNativeApp = true;
-    // ─── SOLUTION 1: "page fully loaded" detector ────────────────────────────
-    // Per the flow spec, the /login page is only truly USABLE when ALL THREE of
-    // its interactive elements exist: the email/mobile input, the password input,
-    // AND the login button. Checking just #mobile_no (the old behaviour) could
-    // fire "ready" while the password field / submit button were still rendering,
-    // so an early auto-fill hit a half-built form. We poll ~7x/sec until all
-    // three are found, then signal native ONCE. Harmless on non-login pages
-    // (never finds the form, self-stops at MAX_WAIT).
-    (function formReady() {
-      var start = Date.now();
-      var MAX_WAIT = 120000;
-      function isFormReady() {
-        var emailInput = document.getElementById('mobile_no');
-        var passwordInput =
-          document.querySelector('input[type="password"]') ||
-          document.querySelector('#mat-input-1');
-        var loginButton = document.querySelector('button.submit-button');
-        return !!(emailInput && passwordInput && loginButton);
-      }
-      function tick() {
-        try {
-          if (isFormReady() &&
-              window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'PREWARM_FORM_READY',
-              waited: Date.now() - start,
-            }));
-            return;
-          }
-        } catch (e) {}
-        if (Date.now() - start > MAX_WAIT) return;
-        setTimeout(tick, 150);
-      }
-      tick();
-    })();
     true;
   `;
 
-  const renderMobileUI = () => (
-    <>
-      {!IS_TABLET && (
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Login Here</Text>
-        </View>
-      )}
-
-      <ScrollView
-        contentContainerStyle={{ flexGrow: 1 }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.container}>
-          <Image
-            source={require('./src/common/Healthraylogo.png')}
-            style={styles.logo}
-            resizeMode="contain"
-          />
-
-          <Text style={styles.subtitle}>
-            Glad to see you back. Please login to start chatting with your patient.
-          </Text>
-
-          <View style={styles.segment}>
-            {['Doctor', 'Invitee'].map((item, index) => (
-              <TouchableOpacity
-                key={item}
-                style={[styles.segmentBtn, userType === item && styles.segmentActive]}
-                onPress={() => setUserType(index === 1 ? "Invitee" : "Doctor")}
-              >
-                <Text style={[styles.segmentText, userType === item && styles.segmentTextActive]}>
-                  {item === "Invitee" ? "Staff" : "Doctor"}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <View style={styles.inputWrapper}>
-            <View style={{ flexDirection: "row", alignItems: 'center', gap: 10 }}>
-              <Icon name="call" size={25} color="#666" />
-              <TextInput
-                placeholder="Mobile number"
-                placeholderTextColor="#999"
-                keyboardType="phone-pad"
-                maxLength={10}
-                style={styles.input}
-                value={mobileNo}
-                onChangeText={(text) => {
-                  setMobileNo(text);
-                  if (mobileNoError) setMobileNoError(null);
-                }}
-              />
-            </View>
-            {mobileNoError && (
-              <Text style={styles.errorText}>{mobileNoError}</Text>
-            )}
-          </View>
-
-          <View style={[styles.inputWrapper, { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }]}>
-            <Icon name="lock" size={25} color="#666" />
-            <TextInput
-              placeholder="Password"
-              placeholderTextColor="#999"
-              secureTextEntry={!passwordVisible}
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-            />
-            <TouchableOpacity
-              onPress={() => setPasswordVisible(!passwordVisible)}
-              style={styles.eyeButton}
-            >
-              <Icon
-                name={passwordVisible ? "visibility" : "visibility-off"}
-                size={20}
-                color="#666"
-              />
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
-            <Text style={styles.loginText}>Login</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-    </>
-  );
-
   /* ================= UNIFIED RENDER ================= */
-  // The WebView is mounted as soon as the user is confirmed NOT logged in
-  // (preWarmMode=true) so the /login page loads in the background while the
-  // user fills their credentials. When showWeb becomes true, the same instance
-  // becomes visible — no cold-mount penalty after login.
+  // WebView-only: one always-visible WebView pointed at the web app root. The
+  // web app owns auth and persists its session in the WebView's localStorage /
+  // cookies, so the user stays signed in across restarts.
   return (
     <View style={{ flex: 1 }}>
-
-      {/* WebView — always mounted during pre-warm or active session */}
-      {(preWarmMode || showWeb) && (
-        <View
-          style={[StyleSheet.absoluteFill, !showWeb && { opacity: 0 }]}
-          pointerEvents={showWeb ? 'auto' : 'none'}
-        >
-          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-            <WebView
-              ref={webRef}
-              source={{ uri: initialWebUrl }}
-              style={{ flex: 1 }}
-              javaScriptEnabled
-              domStorageEnabled
-              cacheEnabled
-              mixedContentMode="always"
-              injectedJavaScriptBeforeContentLoaded={beforeContentLoadedScript}
-              injectedJavaScript={combinedScript}
-              scalesPageToFit={false}
-              setBuiltInZoomControls={false}
-              setDisplayZoomControls={false}
-              bounces={false}
-              scrollEnabled={true}
-              originWhitelist={['https://*', 'http://*', 'app-settings:*']}
-              onMessage={handleMessage}
-              onLoadEnd={handleLoadEnd}
-              onNavigationStateChange={handleNavigationStateChange}
-              onError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent); }}
-              onHttpError={(e: any) => { webErroredRef.current = true; logLogin('⚠ WebView onHttpError', { code: e?.nativeEvent?.statusCode, url: e?.nativeEvent?.url }); }}
-              // The OS can kill the WebView renderer at any time (memory
-              // pressure). Without these, the app is left on a dead white
-              // screen forever — and a mid-login crash silently kills every
-              // injected poller. Reloading recovers both: onLoadEnd(/login)
-              // re-injects the auto-fill while a login is active.
-              onRenderProcessGone={(e: any) => {
-                logLogin('⚠ WebView renderer process gone — reloading', e?.nativeEvent);
-                webRef.current?.reload();
-              }}
-              onContentProcessDidTerminate={() => {
-                logLogin('⚠ WebView content process terminated — reloading');
-                webRef.current?.reload();
-              }}
-              onShouldStartLoadWithRequest={(request) => {
-                if (request.url.startsWith('app-settings:')) {
-                  requestLocationPermission();
-                  return false;
-                }
-                return true;
-              }}
-            />
-          </SafeAreaView>
-        </View>
-      )}
-
-      {/* Login UI — shown on top of hidden pre-warm WebView */}
-      {!showWeb && (
-        <KeyboardAvoidingView
-          style={{ flex: 1, backgroundColor: '#fff' }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 56 : 0}
-        >
-          <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-            {IS_TABLET ? (
-              <>
-                <View style={styles.header}>
-                  <Text style={styles.headerTitle}>Login Here</Text>
-                </View>
-                <View style={{ flex: 1, flexDirection: 'row' }}>
-                  <View style={styles.tabletLeft}>
-                    <Image
-                      source={require('./src/common/BannerLogo.png')}
-                      style={styles.tabletImage}
-                      resizeMode="contain"
-                    />
-                  </View>
-                  <View style={styles.tabletRight}>
-                    {renderMobileUI()}
-                  </View>
-                </View>
-              </>
-            ) : (
-              renderMobileUI()
-            )}
-          </SafeAreaView>
-        </KeyboardAvoidingView>
-      )}
-
-      {/* Loading overlay — covers both WebView and login screen */}
-      {loading && (
-        <View style={styles.overlay}>
-          <LottieView
-            source={require('./src/common/Loader.json')}
-            autoPlay
-            loop
-            style={styles.lottie}
-          />
-          {loadingStatus ? (
-            <Text style={styles.loaderText}>{loadingStatus}</Text>
-          ) : null}
-        </View>
-      )}
+      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+        <WebView
+          ref={webRef}
+          source={{ uri: initialWebUrl }}
+          style={{ flex: 1 }}
+          javaScriptEnabled
+          domStorageEnabled
+          cacheEnabled
+          sharedCookiesEnabled          // iOS (WKWebView): persist cookies → stay signed in
+          thirdPartyCookiesEnabled      // Android: allow the web session cookie
+          mixedContentMode="always"
+          injectedJavaScriptBeforeContentLoaded={beforeContentLoadedScript}
+          injectedJavaScript={combinedScript}
+          scalesPageToFit={false}
+          setBuiltInZoomControls={false}
+          setDisplayZoomControls={false}
+          bounces={false}
+          scrollEnabled={true}
+          originWhitelist={['https://*', 'http://*', 'app-settings:*']}
+          onMessage={handleMessage}
+          onLoadEnd={handleLoadEnd}
+          onNavigationStateChange={handleNavigationStateChange}
+          onError={(e: any) => {
+            webErroredRef.current = true;
+            console.log('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent);
+            hideSplashOnce(); // never leave the splash stuck if the first load errors (offline)
+          }}
+          onHttpError={(e: any) => {
+            webErroredRef.current = true;
+            console.log('⚠ WebView onHttpError', { code: e?.nativeEvent?.statusCode, url: e?.nativeEvent?.url });
+          }}
+          // The OS can kill the WebView renderer under memory pressure; reload so
+          // the app doesn't sit on a dead white screen (the web session persists).
+          onRenderProcessGone={(e: any) => {
+            console.log('⚠ WebView renderer process gone — reloading', e?.nativeEvent);
+            webRef.current?.reload();
+          }}
+          onContentProcessDidTerminate={() => {
+            console.log('⚠ WebView content process terminated — reloading');
+            webRef.current?.reload();
+          }}
+          onShouldStartLoadWithRequest={(request: any) => {
+            const url = request.url || '';
+            // App-settings deep link → native location-permission flow.
+            if (url.startsWith('app-settings:')) {
+              requestLocationPermission();
+              return false;
+            }
+            // Non-http(s) schemes can't render in a WebView — hand them to the OS
+            // (dialer, mail, SMS, WhatsApp, UPI, maps, Android intents).
+            if (/^(tel:|mailto:|sms:|whatsapp:|upi:|geo:|intent:)/i.test(url)) {
+              Linking.openURL(url).catch(() => { });
+              return false;
+            }
+            return true;
+          }}
+        />
+      </SafeAreaView>
 
       {/* No Internet modal — single instance, works in any app state */}
       <Modal visible={showInternetModel} transparent animationType="fade" supportedOrientations={['landscape']}>
@@ -3468,15 +2125,12 @@ function AppContent() {
           </View>
         </View>
       </Modal>
-
     </View>
   );
 }
 
 /* ================= STYLES ================= */
 const styles = StyleSheet.create({
-  errorText: { color: "red", fontSize: 12 },
-  eyeButton: { padding: 5 },
   button: {
     backgroundColor: "#0b3d6e",
     height: 45,
@@ -3486,13 +2140,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  overlay: {
-    position: "absolute",
-    inset: 0,
-    backgroundColor: "rgb(38,42,50)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -3508,77 +2155,4 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
   modalText: { textAlign: 'center' },
-  header: {
-    height: 56,
-    backgroundColor: '#114DAA',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: '600' },
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    paddingHorizontal: IS_TABLET ? width * 0.05 : width * 0.08,
-  },
-  logo: {
-    width: IS_TABLET ? width * 0.2 : width * 0.5,
-    height: 120,
-    marginTop: 30,
-  },
-  subtitle: {
-    textAlign: 'center',
-    color: '#444',
-    marginVertical: 20,
-    fontSize: 14,
-  },
-  segment: {
-    flexDirection: 'row',
-    borderWidth: 2,
-    borderColor: '#114DAA',
-    borderRadius: 8,
-    overflow: 'hidden',
-    marginBottom: 30,
-    width: '75%',
-  },
-  segmentBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  segmentActive: { backgroundColor: '#114DAA' },
-  segmentText: { color: '#114DAA', fontWeight: '600' },
-  segmentTextActive: { color: '#fff' },
-  inputWrapper: {
-    width: '100%',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-    marginBottom: 20,
-  },
-  input: { height: 45, fontSize: 15, width: "75%", color: '#000' },
-  loginBtn: {
-    width: '100%',
-    backgroundColor: '#114DAA',
-    paddingVertical: 14,
-    borderRadius: 30,
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  loginText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  forgotText: {
-    marginTop: 25,
-    color: '#114DAA',
-    fontWeight: '600',
-    textDecorationLine: 'underline',
-  },
-  tabletLeft: {
-    width: '65%',
-    backgroundColor: '#EAF4FB',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  tabletImage: { width: '80%', height: '80%' },
-  tabletRight: { width: '35%', justifyContent: 'center' },
-  lottie: { width: 150, height: 150 },
-  loaderText: { color: '#fff', fontSize: 15, marginTop: 12, fontWeight: '500' },
 });
