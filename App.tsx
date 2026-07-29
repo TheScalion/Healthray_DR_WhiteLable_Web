@@ -20,6 +20,7 @@ import {
   ToastAndroid,
   DeviceEventEmitter,
   BackHandler,
+  Alert,
 } from "react-native";
 
 const { BatteryOptimization } = NativeModules;
@@ -51,6 +52,12 @@ const WEB_BASE = IS_STAGING
   ? 'https://devfront.healthray.com'
   : 'https://ray.healthray.com';
 
+// react-native-webview's error event only populates `domain` on iOS/macOS
+// (see WebViewTypes.ts: "`domain` is only used on iOS and macOS") — on
+// Android it's always undefined by construction, not something fixable from
+// this file. Show the host we actually know we're loading instead.
+const WEB_BASE_HOST = WEB_BASE.replace(/^https?:\/\//, '');
+
 // WebView-only: the app loads WEB_BASE (root) and the web app handles auth
 // itself. We only need to recognise the web login route so we can (a) trigger
 // the auth-token sync when the user is on an authenticated page and (b) tear
@@ -59,6 +66,23 @@ const WEB_LOGIN_PATH = '/login';
 const isOnLoginPage = (url: string): boolean =>
   !!url && url.toLowerCase().includes(WEB_LOGIN_PATH);
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Build/version gate ──────────────────────────────────────────────────────
+// Checked once on every app launch. The backend returns a status that decides
+// whether the app is fine, should nudge (soft) or must block (force) an
+// update, or is in maintenance. Fails open on any network/API error so a
+// transient outage never locks users out of an otherwise-working app.
+const BUILD_MANAGEMENT_API = `${API_BASE}/api/v1/build_management/check_update_required`;
+const ITUNES_URL = 'https://apps.apple.com/in/app/healthray-dr-for-doctors/id1513592834';
+const PLAYSTORE_URL = 'https://play.google.com/store/apps/details?id=com.healthray.doctor&hl=en_IN';
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A WebView load error (e.g. DNS failure) doesn't necessarily flip NetInfo's
+// isConnected — the device can be online at the link layer while the domain
+// fails to resolve. So on top of the reconnect-triggered reload, self-heal
+// with a capped backoff; after these are exhausted the user still has the
+// "Try Again" button in the error screen (see renderWebViewError below).
+const WEB_LOAD_RETRY_DELAYS_MS = [3000, 6000, 12000, 20000];
 
 // ─── HRMS tracking constants ─────────────────────────────────────────────────
 // Native owns auth + base URL, so the WebView never sends them in the
@@ -1410,6 +1434,8 @@ function AppContent() {
   const isOnlineRef = useRef<boolean>(false);
   const canGoBackRef = useRef(false);        // WebView has history (for Android hardware back)
   const webErroredRef = useRef(false);       // WebView had a load error → reload on reconnect
+  const errorRetryCountRef = useRef(0);      // auto-retry attempts for the current error streak (capped)
+  const errorRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fcmTokenRef = useRef<string>('');    // cached FCM device token (for WEB_AUTH_TOKENS sync)
   const authSyncedRef = useRef(false);       // web auth token pulled into AsyncStorage this session
   const lastBackPressRef = useRef(0);        // ms timestamp of last root back-press (double-tap-to-exit)
@@ -1420,6 +1446,12 @@ function AppContent() {
   const [initialWebUrl, setInitialWebUrl] = useState(`${WEB_BASE}/`);
   const [netInfoReady, setNetInfoReady] = useState(false);
   const showInternetModel = netInfoReady && isConnected === false;
+
+  // Version gate (see BUILD_MANAGEMENT_API above). Non-null blocks the WebView
+  // entirely in favor of a dedicated screen — see the early return below.
+  const [forceUpdateMessage, setForceUpdateMessage] = useState<string | null>(null);
+  const [forceUpdateStoreUrl, setForceUpdateStoreUrl] = useState('');
+  const [maintenanceMessage, setMaintenanceMessage] = useState<string | null>(null);
 
   // Splash: dismiss it once the WebView paints its first page (see handleLoadEnd
   // and the WebView onError handler). The safety timer guarantees the splash is
@@ -1434,6 +1466,65 @@ function AppContent() {
     const t = setTimeout(hideSplashOnce, 6000);
     return () => clearTimeout(t);
   }, [hideSplashOnce]);
+
+  // The version-gate screens below replace the WebView, so nothing will ever
+  // fire the WebView's onLoadEnd to dismiss the splash — do it here instead.
+  useEffect(() => {
+    if (forceUpdateMessage || maintenanceMessage) hideSplashOnce();
+  }, [forceUpdateMessage, maintenanceMessage, hideSplashOnce]);
+
+  // Runs once per app launch, before the WebView loads anything. A network/API
+  // failure is swallowed (fail open) — see comment at BUILD_MANAGEMENT_API.
+  useEffect(() => {
+    const getStoreUrl = (data: any): string => {
+      if (Platform.OS === 'ios') return data?.ios_app_url || ITUNES_URL;
+      return data?.android_app_url || PLAYSTORE_URL;
+    };
+
+    (async () => {
+      try {
+        const res = await axios.post(
+          BUILD_MANAGEMENT_API,
+          {
+            platform: Platform.OS === 'ios' ? 'iOS' : 'Android',
+            current_version: DeviceInfo.getVersion(),
+            user_type: 'D',
+          },
+          {
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            timeout: 15000,
+          },
+        );
+
+        const { status, message, data } = res.data ?? {};
+
+        if (status === 701) {
+          // Force update: block the app. No dismiss path — the screen stays up
+          // for the rest of this session; the gate re-checks on the next launch.
+          setForceUpdateStoreUrl(getStoreUrl(data));
+          setForceUpdateMessage(message || 'A new version is available. Please update to continue.');
+        } else if (status === 702) {
+          const storeUrl = getStoreUrl(data);
+          Alert.alert(
+            'Update Available',
+            message || 'A new version is available.',
+            [
+              { text: 'Later', style: 'cancel' },
+              { text: 'Update', onPress: () => Linking.openURL(storeUrl) },
+            ],
+          );
+        } else if (status === 703) {
+          setMaintenanceMessage(message || 'The app is currently under maintenance. Please try again later.');
+        }
+      } catch (e) {
+        if (axios.isAxiosError(e)) {
+          console.log('[VersionGate] check_update_required failed:', e.message);
+        } else {
+          console.log('[VersionGate] check_update_required failed:', e);
+        }
+      }
+    })();
+  }, []);
 
   // Pull the web session's auth token out of the WebView's localStorage and hand
   // it to native (WEB_AUTH_TOKENS) so HRMS tracking + ambulance push stay
@@ -1550,6 +1641,11 @@ function AppContent() {
       // failed while offline recovers automatically.
       if (webErroredRef.current && webRef.current) {
         webErroredRef.current = false;
+        if (errorRetryTimerRef.current) {
+          clearTimeout(errorRetryTimerRef.current); // don't double-reload against the pending backoff retry
+          errorRetryTimerRef.current = null;
+        }
+        errorRetryCountRef.current = 0;
         webRef.current.reload();
       }
     }
@@ -1576,6 +1672,17 @@ function AppContent() {
       // backend rotated while we were backgrounded is refreshed in native
       // storage. The WEB_AUTH_TOKENS handler no-ops when the token is unchanged.
       if (authSyncedRef.current) syncWebAuthTokens();
+      // A user who backgrounds the app to fix their network/DNS shouldn't have
+      // to sit through the remaining backoff delay when they come back.
+      if (webErroredRef.current && webRef.current) {
+        webErroredRef.current = false;
+        if (errorRetryTimerRef.current) {
+          clearTimeout(errorRetryTimerRef.current);
+          errorRetryTimerRef.current = null;
+        }
+        errorRetryCountRef.current = 0;
+        webRef.current.reload();
+      }
     });
     return () => sub.remove();
   }, [syncWebAuthTokens]);
@@ -1645,10 +1752,78 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
+  // onLoadEnd fires on BOTH success and failure (the library calls it right
+  // after onError too), so it must never be the thing that clears the error
+  // flag — that used to happen here and silently defeated every recovery path
+  // below it. It only owns dropping the splash.
   const handleLoadEnd = (_e: any) => {
-    webErroredRef.current = false; // a successful load clears any prior error
-    hideSplashOnce();              // first paint → drop the native splash
+    hideSplashOnce(); // first paint (or first failure) → drop the native splash
   };
+
+  const clearWebLoadRetry = useCallback(() => {
+    if (errorRetryTimerRef.current) {
+      clearTimeout(errorRetryTimerRef.current);
+      errorRetryTimerRef.current = null;
+    }
+  }, []);
+
+  // Success-only: onLoad fires only via the library's success path, never the
+  // error path, so it's the correct place to clear the error state.
+  const handleWebLoadSuccess = useCallback(() => {
+    webErroredRef.current = false;
+    errorRetryCountRef.current = 0;
+    clearWebLoadRetry();
+  }, [clearWebLoadRetry]);
+
+  // Self-heal with a capped backoff — a DNS/transient failure doesn't
+  // necessarily flip NetInfo's isConnected, so this is the only automatic
+  // retry path for that case. Exhausting it just leaves the manual "Try
+  // Again" button in the error screen as the fallback.
+  const scheduleWebLoadRetry = useCallback(() => {
+    if (errorRetryTimerRef.current) return; // already scheduled
+    const attempt = errorRetryCountRef.current;
+    if (attempt >= WEB_LOAD_RETRY_DELAYS_MS.length) return;
+    errorRetryTimerRef.current = setTimeout(() => {
+      errorRetryTimerRef.current = null;
+      errorRetryCountRef.current += 1;
+      webRef.current?.reload();
+    }, WEB_LOAD_RETRY_DELAYS_MS[attempt]);
+  }, []);
+
+  const retryWebViewNow = useCallback(() => {
+    clearWebLoadRetry();
+    errorRetryCountRef.current = 0; // manual retry gets a fresh backoff budget next time
+    webRef.current?.reload();
+  }, [clearWebLoadRetry]);
+
+  // Replaces the library's raw "Domain / Error Code / Description" default
+  // (see node_modules/react-native-webview/src/WebViewShared.tsx) with a
+  // screen that matches the rest of the app and actually gives the user a
+  // way out instead of a dead end. Ignores the passed-in domain — it's
+  // undefined on Android by construction (see WEB_BASE_HOST above) — and
+  // shows WEB_BASE_HOST instead, which is always accurate.
+  const renderWebViewError = useCallback(
+    (_domain: string | undefined, _code: number, description: string) => (
+      <View style={styles.webErrorOverlay}>
+        <Text style={styles.gateTitle}>Can't Connect</Text>
+        <Text style={styles.gateMessage}>
+          Please check your internet connection and try again.
+        </Text>
+        <Text style={[styles.gateMessage, { fontSize: 12, color: '#999', marginTop: 8 }]}>
+          {description}
+        </Text>
+        <TouchableOpacity
+          style={[styles.button, { paddingHorizontal: 24, marginTop: 20 }]}
+          onPress={retryWebViewNow}
+        >
+          <Text style={styles.buttonText}>Try Again</Text>
+        </TouchableOpacity>
+      </View>
+    ),
+    [retryWebViewNow],
+  );
+
+  useEffect(() => clearWebLoadRetry, [clearWebLoadRetry]);
 
   const handleNavigationStateChange = (navState: any) => {
     const url = (navState.url || '').toLowerCase();
@@ -2039,6 +2214,34 @@ function AppContent() {
   `;
 
   /* ================= UNIFIED RENDER ================= */
+
+  // Force update: replaces the WebView entirely. Only action is "Update Now";
+  // there is no way back into the app from here this session.
+  if (forceUpdateMessage) {
+    return (
+      <SafeAreaView style={[styles.gateScreen, { justifyContent: 'center' }]}>
+        <Text style={styles.gateTitle}>Update Required</Text>
+        <Text style={styles.gateMessage}>{forceUpdateMessage}</Text>
+        <TouchableOpacity
+          style={[styles.button, { paddingHorizontal: 24, marginTop: 20 }]}
+          onPress={() => Linking.openURL(forceUpdateStoreUrl)}
+        >
+          <Text style={styles.buttonText}>Update Now</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  // Maintenance: same idea, no action available — just wait it out.
+  if (maintenanceMessage) {
+    return (
+      <SafeAreaView style={[styles.gateScreen, { justifyContent: 'center' }]}>
+        <Text style={styles.gateTitle}>Under Maintenance</Text>
+        <Text style={styles.gateMessage}>{maintenanceMessage}</Text>
+      </SafeAreaView>
+    );
+  }
+
   // WebView-only: one always-visible WebView pointed at the web app root. The
   // web app owns auth and persists its session in the WebView's localStorage /
   // cookies, so the user stays signed in across restarts.
@@ -2064,12 +2267,15 @@ function AppContent() {
           scrollEnabled={true}
           originWhitelist={['https://*', 'http://*', 'app-settings:*']}
           onMessage={handleMessage}
+          onLoad={handleWebLoadSuccess}
           onLoadEnd={handleLoadEnd}
           onNavigationStateChange={handleNavigationStateChange}
+          renderError={renderWebViewError}
           onError={(e: any) => {
             webErroredRef.current = true;
             console.log('⚠ WebView onError', e?.nativeEvent?.description ?? e?.nativeEvent);
             hideSplashOnce(); // never leave the splash stuck if the first load errors (offline)
+            scheduleWebLoadRetry();
           }}
           onHttpError={(e: any) => {
             webErroredRef.current = true;
@@ -2155,4 +2361,25 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
   modalText: { textAlign: 'center' },
+  gateScreen: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    paddingHorizontal: 24,
+  },
+  gateTitle: { fontSize: 22, fontWeight: '700', marginBottom: 12, textAlign: 'center' },
+  gateMessage: { fontSize: 15, textAlign: 'center', color: '#333' },
+  // Unlike gateScreen (a full top-level return with no sibling), this renders
+  // inside the WebView's own container next to the (still-mounted) WebView —
+  // it needs absolute positioning to actually cover it, matching the sizing
+  // the library's own default error/loading views use internally.
+  webErrorOverlay: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    paddingHorizontal: 24,
+  },
 });
