@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "325352408346",
+    "project_id": "heritage-dr",
+    "storage_bucket": "heritage-dr.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:325352408346:android:0a4e47bdaa68c906f518a3",
+        "android_client_info": {
+          "package_name": "com.heritage.doctor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCfDn9geYKEeREloVMzQE5yicXINYXkSwg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:325352408346:android:0013699455331380f518a3",
+        "android_client_info": {
+          "package_name": "com.heritage_for_doctor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCfDn9geYKEeREloVMzQE5yicXINYXkSwg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

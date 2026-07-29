@@ -1,6 +1,7 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
+apply plugin: "com.google.gms.google-services"
 apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")
 
 /**
@@ -103,6 +104,8 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+             minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
         release {
             // Caution! In production, you need to generate your own keystore file.
@@ -117,6 +120,13 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    // WorkManager — periodic health check that restarts GPS if killed by OEM battery manager
+    implementation "androidx.work:work-runtime-ktx:2.9.0"
+
+    // Fused Location — declared explicitly so HrmsLocationService can import it directly.
+    // react-native-geolocation-service uses implementation (not api) so it doesn't leak to us.
+    implementation "com.google.android.gms:play-services-location:18.0.0"
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
