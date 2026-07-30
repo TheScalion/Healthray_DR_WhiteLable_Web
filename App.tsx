@@ -1425,6 +1425,8 @@ function AppContent() {
   const prevInternetRef = useRef<boolean | null>(null);
   const isOnlineRef = useRef<boolean>(false);
   const canGoBackRef = useRef(false);        // WebView has history (for Android hardware back)
+  const currentUrlRef = useRef('');          // last URL seen by handleNavigationStateChange
+  const prevUrlRef = useRef('');             // URL one step behind current (what "back" would land on)
   const webErroredRef = useRef(false);       // WebView had a load error → reload on reconnect
   const errorRetryCountRef = useRef(0);      // auto-retry attempts for the current error streak (capped)
   const errorRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1729,7 +1731,8 @@ function AppContent() {
   // user out of the app.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (canGoBackRef.current && webRef.current) {
+      const backWouldReturnToLogin = authSyncedRef.current && isOnLoginPage(prevUrlRef.current);
+      if (canGoBackRef.current && webRef.current && !backWouldReturnToLogin) {
         webRef.current.goBack();
         return true;
       }
@@ -1823,6 +1826,12 @@ function AppContent() {
   const handleNavigationStateChange = (navState: any) => {
     const url = (navState.url || '').toLowerCase();
     canGoBackRef.current = !!navState.canGoBack;
+    // hardwareBackPress handler below) — react-native-webview only exposes
+    // canGoBack as a boolean, not the actual history stack.
+    if (url !== currentUrlRef.current) {
+      prevUrlRef.current = currentUrlRef.current;
+      currentUrlRef.current = url;
+    }
 
     if (isOnLoginPage(url)) {
       // On the web login page. If we were previously authenticated this session,
