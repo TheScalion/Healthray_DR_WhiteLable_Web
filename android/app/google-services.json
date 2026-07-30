@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1069032991373",
+    "project_id": "heritagedr-noida",
+    "storage_bucket": "heritagedr-noida.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1069032991373:android:361cf257097f858e4610c4",
+        "android_client_info": {
+          "package_name": "com.heritage.doctor.noida"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCi1opCjsXmYIPNM0FlcxryuElMFiAxuDk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
