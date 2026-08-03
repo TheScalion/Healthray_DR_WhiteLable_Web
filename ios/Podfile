@@ -23,6 +23,21 @@ target 'Heritage_for_Doctor' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
+  # Firebase pods cross-import each other's modules and need module maps to
+  # be importable from Swift when building as static libraries. Scoped to
+  # just this dependency chain so it doesn't force modular headers (and
+  # modulemap generation) onto every other pod in the project — doing that
+  # globally collides with React Native's own react_runtime module.
+  pod 'FirebaseCore', :modular_headers => true
+  pod 'FirebaseCoreExtension', :modular_headers => true
+  pod 'FirebaseCoreInternal', :modular_headers => true
+  pod 'FirebaseInstallations', :modular_headers => true
+  pod 'FirebaseMessaging', :modular_headers => true
+  pod 'GoogleDataTransport', :modular_headers => true
+  pod 'GoogleUtilities', :modular_headers => true
+  pod 'PromisesObjC', :modular_headers => true
+  pod 'nanopb', :modular_headers => true
+
   post_install do |installer|
     react_native_post_install(
       installer,
@@ -30,5 +45,17 @@ target 'Heritage_for_Doctor' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # Work around fmt's consteval detection being broken on newer Apple Clang
+    # (Xcode 26.4+): https://github.com/fmtlib/fmt/issues/4740
+    fmt_base_h = File.join(__dir__, 'Pods', 'fmt', 'include', 'fmt', 'base.h')
+    if File.exist?(fmt_base_h)
+      contents = File.read(fmt_base_h)
+      patched = contents.sub(
+        /#elif defined\(__apple_build_version__\) && __apple_build_version__ < 14000029L\n#  define FMT_USE_CONSTEVAL 0  \/\/ consteval is broken in Apple clang < 14\./,
+        "#elif defined(__apple_build_version__)\n#  define FMT_USE_CONSTEVAL 0  // consteval is broken in Apple clang."
+      )
+      File.write(fmt_base_h, patched) if patched != contents
+    end
   end
 end
