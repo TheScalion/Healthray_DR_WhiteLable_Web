@@ -1,19 +1,3 @@
-/**
- * deviceToken.ts
- *
- * Manages the native FCM token lifecycle for the ambulance module.
- *
- * - rememberSession  : called right after sign_in succeeds; persists auth_token,
- *                      the native FCM token as device_token, and user_role.
- * - syncDeviceToken  : called on cold start + onTokenRefresh (index.js only);
- *                      if the token has changed, calls POST /api/v1/users/refresh_token
- *                      so the backend row always holds the current native token.
- *
- * IMPORTANT — token refresh is handled in ONE place only: index.js onTokenRefresh.
- * Do NOT also call syncDeviceToken from fcmService.ts or App.tsx initFCM callback,
- * or you get two concurrent API calls for the same rotation which breaks the
- * X-Device-Token lookup on the backend.
- */
 
 import messaging from '@react-native-firebase/messaging';
 import AsyncStorage from '@react-native-async-storage/async-storage';
