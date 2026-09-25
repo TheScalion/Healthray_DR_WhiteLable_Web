@@ -1,97 +1,135 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Healthray DR (React Native)
 
-# Getting Started
+A React Native app that wraps the Healthray web app in a WebView. On top of the web app it adds push notifications, HRMS location tracking, PDF saving, and a force-update / maintenance check.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+There are three builds of the app, one per backend environment. Each has its own name, package ID and Firebase project, so **all three can be installed on the same phone at the same time**.
 
-## Step 1: Start Metro
+| Environment | App name on phone | Package ID | Web app | API | Firebase project |
+|---|---|---|---|---|---|
+| **Prod** | Healthray-DR | `com.healthray.doctor` | https://ray.healthray.com | https://node.healthray.com | `healthray-dr` |
+| **Stage** | Stage-DR-Healthray | `com.healthray.doctor.stage` | https://stage-ray.healthray.com/login | https://stage-node.healthray.com | `healthray-dr-stage` |
+| **UAT** | UAT-DR-Healthray | `com.healthray.doctor.uat` | https://uat-ray.healthray.com/login | https://uat-node.healthray.com | `healthray-dr-uat` |
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+> Android only for now. iOS still builds as Prod only.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+---
 
+## 1. One-time setup
+
+1. Finish the React Native [environment setup](https://reactnative.dev/docs/set-up-your-environment) for Android (JDK 17, Android Studio, Android SDK).
+2. Install dependencies from the project root:
+   ```sh
+   npm install
+   ```
+3. Check that the Firebase config files are in place. Each environment has its own:
+   ```
+   android/app/google-services.json              ← Prod
+   android/app/src/stage/google-services.json    ← Stage
+   android/app/src/uat/google-services.json      ← UAT
+   ```
+
+---
+
+## 2. Run an app on a phone or emulator (debug)
+
+Connect a phone with USB debugging on (or start an emulator), then:
+
+**Step 1:** start Metro in one terminal. One Metro serves all three apps.
 ```sh
-# Using npm
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
-## Step 2: Build and run your app
+**Step 2:** in a second terminal, run the environment you want:
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+| To run | Command |
+|---|---|
+| Prod | `npm run android:prod` (or `npm run android`) |
+| Stage | `npm run android:stage` |
+| UAT | `npm run android:uat` |
 
-### Android
+The command builds the app, installs it and opens it. You can run all three one after another; each installs as a separate app.
 
+> 💡 **Testing against a local web server (optional).** By default every build loads its environment's real web URL. To point **debug** builds at a local Angular server instead, set this in [src/config/env.ts](src/config/env.ts):
+> ```ts
+> const LOCAL_DEV_WEB_BASE: string | undefined = 'http://localhost:4200';
+> ```
+> and run `adb reverse tcp:4200 tcp:4200`. Set it back to `undefined` when you're done. Release builds ignore this setting.
+
+---
+
+## 3. Build a release APK / AAB
+
+Bump the version first if this build is going to testers or the store. Edit `versionCode` and `versionName` in [android/app/build.gradle](android/app/build.gradle); all three environments share them.
+
+| To build | Command | Output |
+|---|---|---|
+| Prod APK | `npm run apk:prod` | `android/app/build/outputs/apk/prod/release/app-prod-release.apk` |
+| Stage APK | `npm run apk:stage` | `android/app/build/outputs/apk/stage/release/app-stage-release.apk` |
+| UAT APK | `npm run apk:uat` | `android/app/build/outputs/apk/uat/release/app-uat-release.apk` |
+| All three APKs | `npm run apk:all` | all of the above |
+| Prod AAB (Play Store) | `npm run aab:prod` | `android/app/build/outputs/bundle/prodRelease/app-prod-release.aab` |
+| Stage / UAT AAB | `npm run aab:stage` / `npm run aab:uat` | `android/app/build/outputs/bundle/<env>Release/` |
+
+To install a built release APK on the connected phone:
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+npm run install:prod     # or install:stage / install:uat
 ```
 
-### iOS
+Upload the **Prod AAB** to the Play Store. Share Stage/UAT APKs directly with testers.
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+---
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+## All scripts
 
-```sh
-bundle install
-```
+| Script | What it does |
+|---|---|
+| `npm start` | Start Metro (needed for debug runs) |
+| `npm run start:reset` | Start Metro with a cleared cache |
+| `npm run android` | Same as `android:prod` |
+| `npm run android:prod` / `android:stage` / `android:uat` | Build, install and open the **debug** app (needs Metro) |
+| `npm run android:prod:release` / `android:stage:release` / `android:uat:release` | Build, install and open the **release** app on the connected phone (JS bundled, no Metro) |
+| `npm run apk:prod` / `apk:stage` / `apk:uat` | Build a release APK |
+| `npm run apk:all` | Build release APKs for all three environments |
+| `npm run aab:prod` / `aab:stage` / `aab:uat` | Build a release AAB |
+| `npm run install:prod` / `install:stage` / `install:uat` | Install an already-built release APK with `adb` |
+| `npm run android:clean` | Clear Android build output (`gradlew clean`) |
+| `npm run ios` / `lint` / `test` | Unchanged |
 
-Then, and every time you update your native dependencies, run:
+---
 
-```sh
-bundle exec pod install
-```
+## 4. How the environment is picked
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+You never edit a URL or flip a flag before a build. The command you run decides everything:
 
-```sh
-# Using npm
-npm run ios
+1. `npm run android:stage` builds the **stage** flavor, which is defined in `productFlavors` in [android/app/build.gradle](android/app/build.gradle).
+2. That flavor sets:
+   - the package ID suffix (`.stage`) → `com.healthray.doctor.stage`;
+   - the app name (`Stage-DR-Healthray`);
+   - the Firebase config, which Gradle takes from `android/app/src/stage/google-services.json`.
+3. When the app starts, [src/config/env.ts](src/config/env.ts) reads the installed package ID and chooses the matching `API_BASE`, `WEB_BASE` and `WEB_START_URL` (the page opened on launch):
+   - ending `.stage` → Stage URLs
+   - ending `.uat` → UAT URLs
+   - anything else → Prod URLs
 
-# OR using Yarn
-yarn ios
-```
+All URLs live in the `ENVIRONMENTS` table in `env.ts`. To change an environment's URL, edit it there.
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+---
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+## 5. Troubleshooting
 
-## Step 3: Modify your app
+| Problem | Fix |
+|---|---|
+| `No matching client found for package name 'com.healthray.doctor.xxx'` | That environment's `google-services.json` is missing, or it belongs to a different package. Download it from the right Firebase project and put it in the folder listed in step 1. |
+| App shows `http://localhost:4200 ... ERR_CONNECTION_REFUSED` | `LOCAL_DEV_WEB_BASE` in `src/config/env.ts` is set. Change it back to `undefined` and reload the app (press `r` in Metro). |
+| App doesn't launch after `npm run android:stage` | Open **Stage-DR-Healthray** from the launcher manually. For future runs, check that `package.json` still passes `--appIdSuffix stage`. |
+| Strange build errors after switching branches | `npm run android:clean`, then run the command again. |
+| No push notifications on Stage/UAT | Each environment uses its own Firebase project. The Stage/UAT backend must send pushes with the credentials of `healthray-dr-stage` / `healthray-dr-uat`. |
 
-Now that you have successfully run the app, let's make changes!
+---
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+## 6. Adding another environment later
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+1. Add a flavor in [android/app/build.gradle](android/app/build.gradle) with its own `applicationIdSuffix` and `app_name`, and add `<name>Debug` to `debuggableVariants`.
+2. Add its URLs to `ENVIRONMENTS` in [src/config/env.ts](src/config/env.ts), and match its suffix in `resolveAppEnv`.
+3. Register the new package ID in Firebase and save its file to `android/app/src/<name>/google-services.json`.
+4. Add `android:<name>`, `android:<name>:release`, `apk:<name>`, `aab:<name>` and `install:<name>` scripts to [package.json](package.json).

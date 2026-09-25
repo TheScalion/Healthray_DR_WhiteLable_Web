@@ -23,7 +23,7 @@ import { initFCM } from './src/services/fcmService';
 import { syncDeviceToken, configureApiBase } from './src/services/deviceToken';
 import { hrmsTracker } from './src/tracking';
 import { TRACKING_STORAGE } from './src/tracking/constants';
-import { API_BASE, WEB_BASE, WEB_LOAD_RETRY_DELAYS_MS, isOnLoginPage } from './src/config/env';
+import { API_BASE, WEB_BASE, WEB_START_URL, WEB_LOAD_RETRY_DELAYS_MS, isOnLoginPage } from './src/config/env';
 import { createRequestLocationPermission } from './src/webview/locationPermission';
 import { createMessageHandler } from './src/webview/messageHandler';
 import {
@@ -65,7 +65,7 @@ function AppContent() {
 
   const { isConnected, isInternetReachable } = useNetInfo();
 
-  const [initialWebUrl, setInitialWebUrl] = useState(`${WEB_BASE}/`);
+  const [initialWebUrl, setInitialWebUrl] = useState(WEB_START_URL);
   const [netInfoReady, setNetInfoReady] = useState(false);
   const showInternetModel = netInfoReady && isConnected === false;
 

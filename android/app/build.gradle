@@ -24,6 +24,7 @@ react {
     //   skip the bundling of the JS bundle and the assets. By default is just 'debug'.
     //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
     // debuggableVariants = ["liteDebug", "prodDebug"]
+    debuggableVariants = ["prodDebug", "stageDebug", "uatDebug"]
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -86,6 +87,27 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 149
         versionName "4.8"
+    }
+
+    // One build per backend environment. The JS side picks its URLs from the
+    // installed applicationId (see src/config/env.ts), so each flavor needs a
+    // matching client in google-services.json.
+    flavorDimensions "env"
+    productFlavors {
+        prod {
+            dimension "env"
+            resValue "string", "app_name", "Healthray-DR"
+        }
+        stage {
+            dimension "env"
+            applicationIdSuffix ".stage"
+            resValue "string", "app_name", "Stage-DR-Healthray"
+        }
+        uat {
+            dimension "env"
+            applicationIdSuffix ".uat"
+            resValue "string", "app_name", "UAT-DR-Healthray"
+        }
     }
     signingConfigs {
         debug {

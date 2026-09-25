@@ -1,9 +1,11 @@
 
 import messaging from '@react-native-firebase/messaging';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_BASE } from '../config/env';
 
-// Configured by App.tsx at startup so it matches the IS_STAGING flag there.
-let _apiBase = 'https://node.healthray.com';
+// Defaults to the flavor's API_BASE so the headless onTokenRefresh handler in
+// index.js (which runs before App.tsx mounts) hits the right backend.
+let _apiBase = API_BASE;
 
 export function configureApiBase(url: string): void {
   _apiBase = url;

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "585693801084",
+    "project_id": "healthray-dr-stage",
+    "storage_bucket": "healthray-dr-stage.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:585693801084:android:d828f94433a2e1aad4b7f9",
+        "android_client_info": {
+          "package_name": "com.healthray.doctor.stage"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDeAVaF-rx9BFH7QmSWcC7kwthi7HnvifM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

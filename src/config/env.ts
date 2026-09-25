@@ -1,15 +1,54 @@
+import DeviceInfo from 'react-native-device-info';
+
 // ─── Environment ─────────────────────────────────────────────────────────────
-// Set IS_STAGING = true  → staging  (devfront.healthray.com / node-stage)
-// Set IS_STAGING = false → production (ray.healthray.com / node)
-export const IS_STAGING = false;
+// Selected at build time by the Android product flavor (prod / stage / uat in
+// android/app/build.gradle). Each flavor installs under its own applicationId,
+// which is what we key off here — no manual flag to flip before a build.
+export type AppEnv = 'prod' | 'stage' | 'uat';
 
-export const API_BASE = IS_STAGING
-  ? 'https://node-stage.healthray.com'
-  : 'https://node.healthray.com';
+// WEB_START_URL is the page the WebView opens on launch.
+const ENVIRONMENTS: Record<AppEnv, { API_BASE: string; WEB_BASE: string; WEB_START_URL: string }> = {
+  prod: {
+    API_BASE: 'https://node.healthray.com',
+    WEB_BASE: 'https://ray.healthray.com',
+    WEB_START_URL: 'https://ray.healthray.com/',
+  },
+  stage: {
+    API_BASE: 'https://stage-node.healthray.com',
+    WEB_BASE: 'https://stage-ray.healthray.com',
+    WEB_START_URL: 'https://stage-ray.healthray.com/login',
+  },
+  uat: {
+    API_BASE: 'https://uat-node.healthray.com',
+    WEB_BASE: 'https://uat-ray.healthray.com',
+    WEB_START_URL: 'https://uat-ray.healthray.com/login',
+  },
+};
 
-export const WEB_BASE = IS_STAGING
-  ? 'https://devfront.healthray.com'
-  : 'https://ray.healthray.com';
+const resolveAppEnv = (bundleId: string): AppEnv => {
+  if (bundleId.endsWith('.stage')) return 'stage';
+  if (bundleId.endsWith('.uat')) return 'uat';
+  return 'prod';
+};
+
+export const APP_ENV: AppEnv = resolveAppEnv(DeviceInfo.getBundleId());
+export const IS_STAGING = APP_ENV !== 'prod';
+
+// Dev-only, opt-in: set to 'http://localhost:4200' to point debug builds at a
+// local Angular dev server, tunneled through `adb reverse tcp:4200 tcp:4200` +
+// a local relay to 192.168.0.150:4200 (the phone has no direct network path to
+// that PC). Leave undefined so debug builds load their flavor's real web URL.
+// Ignored in release builds.
+const LOCAL_DEV_WEB_BASE: string | undefined = undefined;
+
+export const API_BASE = ENVIRONMENTS[APP_ENV].API_BASE;
+
+// Origin only — callers append paths (e.g. `${WEB_BASE}/ambulance`).
+export const WEB_BASE = (__DEV__ && LOCAL_DEV_WEB_BASE) || ENVIRONMENTS[APP_ENV].WEB_BASE;
+
+export const WEB_START_URL = (__DEV__ && LOCAL_DEV_WEB_BASE)
+  ? `${LOCAL_DEV_WEB_BASE}/`
+  : ENVIRONMENTS[APP_ENV].WEB_START_URL;
 
 
 export const WEB_BASE_HOST = WEB_BASE.replace(/^https?:\/\//, '');
