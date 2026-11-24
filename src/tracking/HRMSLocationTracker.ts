@@ -137,7 +137,7 @@ export class HRMSLocationTracker {
           'android.permission.POST_NOTIFICATIONS' as any,
           {
             title: 'Notifications',
-            message: 'HealthRay needs to show a notification while location tracking is active.',
+            message: 'Ford-DR needs to show a notification while location tracking is active.',
             buttonPositive: 'Allow',
           },
         ).catch(() => PermissionsAndroid.RESULTS.DENIED);
@@ -152,7 +152,7 @@ export class HRMSLocationTracker {
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         {
           title: 'Location Permission',
-          message: 'HealthRay needs your location for HRMS work tracking.',
+          message: 'Ford-DR needs your location for HRMS work tracking.',
           buttonPositive: 'Allow',
         },
       );
@@ -166,7 +166,7 @@ export class HRMSLocationTracker {
           {
             title: 'Background Location',
             message:
-              'Allow HealthRay to record your location while the app is in the background for HRMS attendance.',
+              'Allow Ford-DR to record your location while the app is in the background for HRMS attendance.',
             buttonPositive: 'Allow Always',
           },
         );

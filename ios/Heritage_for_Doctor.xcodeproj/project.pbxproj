@@ -293,19 +293,19 @@
 				DEVELOPMENT_TEAM = TWBLFM2YHP;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Heritage_for_Doctor/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Healthray-DR";
+				INFOPLIST_KEY_CFBundleDisplayName = "Ford-DR";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 178;
+				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.healthray.doctor;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fordhospital.doctor;
 				PRODUCT_NAME = Heritage_for_Doctor;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -328,19 +328,19 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TWBLFM2YHP;
 				INFOPLIST_FILE = Heritage_for_Doctor/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Healthray-DR";
+				INFOPLIST_KEY_CFBundleDisplayName = "Ford-DR";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 178;
+				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.healthray.doctor;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fordhospital.doctor;
 				PRODUCT_NAME = Heritage_for_Doctor;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

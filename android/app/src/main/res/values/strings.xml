@@ -1,3 +1,3 @@
 <resources>
-    <!-- app_name is defined per flavor via resValue in app/build.gradle -->
+    <string name="app_name">Ford-DR</string>
 </resources>

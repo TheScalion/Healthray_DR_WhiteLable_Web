@@ -11,7 +11,6 @@
         <item name="bootSplashLogo">@drawable/bootsplash_logo</item>
         <item name="postBootSplashTheme">@style/AppTheme</item>
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
-        <item name="android:windowIsTranslucent">true</item>
     </style>
 
 </resources>

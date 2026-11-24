@@ -8,6 +8,8 @@ import android.os.Bundle
 import com.zoontek.rnbootsplash.RNBootSplash
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.os.Build
+import android.view.View
 
 class MainActivity : ReactActivity() {
 
@@ -20,6 +22,12 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     RNBootSplash.init(this, R.style.BootTheme) // ⬅️ initialize the splash screen
     super.onCreate(savedInstanceState)
+    // Android's autofill dropdown (saved logins) steals window focus each time
+    // it refilters on a keystroke, which blurs the WebView input and closes the
+    // keyboard after every character. Opt the whole app out of autofill.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    }
         val isTablet: Boolean = resources.getBoolean(R.bool.isTablet)
     if (isTablet) {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE

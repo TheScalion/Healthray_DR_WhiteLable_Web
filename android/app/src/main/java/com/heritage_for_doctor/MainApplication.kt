@@ -49,7 +49,7 @@ class MainApplication : Application(), ReactApplication {
         "Location Tracking",
         NotificationManager.IMPORTANCE_HIGH
       ).apply {
-        description = "Active while HealthRay is recording your work location"
+        description = "Active while Ford-DR is recording your work location"
         setShowBadge(false)
         setSound(null, null)      // no sound — persistent tracking indicator only
         enableVibration(false)
@@ -61,7 +61,7 @@ class MainApplication : Application(), ReactApplication {
         "Push Notifications",
         NotificationManager.IMPORTANCE_HIGH
       ).apply {
-        description = "HealthRay push notifications"
+        description = "Ford-DR push notifications"
         setShowBadge(true)
         enableVibration(true)
       }

@@ -56,7 +56,7 @@ class HrmsLocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = NotificationCompat.Builder(this, "hrms-tracking")
             .setContentTitle("Location tracking active")
-            .setContentText("HealthRay is recording your work location.")
+            .setContentText("Ford-DR is recording your work location.")
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setSilent(true)

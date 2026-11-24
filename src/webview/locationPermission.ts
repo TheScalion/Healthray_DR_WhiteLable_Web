@@ -21,7 +21,7 @@ export function createRequestLocationPermission(
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         {
           title: 'Location Permission',
-          message: 'HealthRay needs your location to track your position.',
+          message: 'Ford-DR needs your location to track your position.',
           buttonPositive: 'Allow',
           buttonNegative: 'Deny',
         },

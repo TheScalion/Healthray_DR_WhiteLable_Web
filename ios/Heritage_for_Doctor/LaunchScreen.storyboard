@@ -23,10 +23,10 @@
                                 <nil key="highlightedColor"/>
                             </label>
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="lunchScreenLogo" translatesAutoresizingMaskIntoConstraints="NO" id="Ypg-WU-oa3">
-                                <rect key="frame" x="47.5" y="193.5" width="280" height="280"/>
+                                <rect key="frame" x="17.5" y="163.5" width="340" height="340"/>
                                 <constraints>
-                                    <constraint firstAttribute="height" constant="280" id="Zy7-w2-o9G"/>
-                                    <constraint firstAttribute="width" constant="280" id="kwJ-DN-KOW"/>
+                                    <constraint firstAttribute="height" constant="340" id="Zy7-w2-o9G"/>
+                                    <constraint firstAttribute="width" constant="340" id="kwJ-DN-KOW"/>
                                 </constraints>
                             </imageView>
                         </subviews>

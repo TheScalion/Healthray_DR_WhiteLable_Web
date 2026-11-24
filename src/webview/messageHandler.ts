@@ -44,14 +44,14 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
 
         if (Platform.OS === 'android') {
           const folderPath =
-            ReactNativeBlobUtil.fs.dirs.DownloadDir + '/HealthrayDR/HealthrayDocument';
+            ReactNativeBlobUtil.fs.dirs.DownloadDir + '/FordDR/FordDocument';
           const filePath = folderPath + '/Prescription.pdf';
           await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
           await ReactNativeBlobUtil.fs.writeFile(filePath, base64Data, 'base64');
           await ReactNativeBlobUtil.android.actionViewIntent(filePath, 'application/pdf');
         } else {
           const folderPath =
-            ReactNativeBlobUtil.fs.dirs.DocumentDir + '/HealthrayDR/HealthrayDocument';
+            ReactNativeBlobUtil.fs.dirs.DocumentDir + '/FordDR/FordDocument';
           const filePath = folderPath + '/Prescription.pdf';
           await ReactNativeBlobUtil.fs.mkdir(folderPath).catch(() => { });
           await ReactNativeBlobUtil.fs.writeFile(filePath, base64Data, 'base64');

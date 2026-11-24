@@ -1,44 +1,64 @@
 {
   "project_info": {
-    "project_number": "366326426062",
-    "firebase_url": "https://healthray-dr.firebaseio.com",
-    "project_id": "healthray-dr",
-    "storage_bucket": "healthray-dr.firebasestorage.app"
+    "project_number": "140059770362",
+    "project_id": "ford-hospital",
+    "storage_bucket": "ford-hospital.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:366326426062:android:45277a013c52e2215da39f",
+        "mobilesdk_app_id": "1:140059770362:android:fafba0d89f921d8168b843",
         "android_client_info": {
-          "package_name": "com.healthray.doctor"
+          "package_name": "com.ford.hospitals"
         }
       },
-      "oauth_client": [
-        {
-          "client_id": "366326426062-262bcf5o5ia6j39fb2jri7hc9n3d75g2.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
+      "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDmldUNcIZj_zlixrk0sc7nKI5Nh4x2c-g"
+          "current_key": "AIzaSyBhM2AID-OyPopmMqF5TyUE-LE_VlHHJx0"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "366326426062-262bcf5o5ia6j39fb2jri7hc9n3d75g2.apps.googleusercontent.com",
-              "client_type": 3
-            },
-            {
-              "client_id": "366326426062-jq3c09mnrradtc93t59t6tgpqqsnv5ct.apps.googleusercontent.com",
-              "client_type": 2,
-              "ios_info": {
-                "bundle_id": "com.healthray.doctor"
-              }
-            }
-          ]
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:140059770362:android:79a1fb66b579dc7f68b843",
+        "android_client_info": {
+          "package_name": "com.fordhospital.doctor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhM2AID-OyPopmMqF5TyUE-LE_VlHHJx0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:140059770362:android:6f1f2197f5c47e1868b843",
+        "android_client_info": {
+          "package_name": "com.fordhospital.lab"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhM2AID-OyPopmMqF5TyUE-LE_VlHHJx0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
         }
       }
     }

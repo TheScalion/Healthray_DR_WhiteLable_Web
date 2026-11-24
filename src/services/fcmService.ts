@@ -68,7 +68,7 @@ export async function initFCM(onTokenRefresh?: FCMTokenRefreshCallback): Promise
       // Regular notification message (general push, not a driver call)
       try {
         await notifee.displayNotification({
-          title: notification.title ?? 'HealthRay',
+          title: notification.title ?? 'Ford-DR',
           body: notification.body ?? '',
           android: {
             channelId: 'fcm-notifications',
